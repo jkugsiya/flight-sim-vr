@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    "DIN Alternate", "Bahnschrift", "Avenir Next Condensed", "Roboto Condensed", "Arial Narrow",
+    system-ui, sans-serif;
+  --color-panel: #2b3437;
+  --color-panel-edge: #56625f;
+  --color-bezel: #0c1114;
+  --color-face: #12181c;
+  --color-marking: #ece7d8;
+  --color-amber: #f2a93b;
+  --color-go: #5cc26f;
+  --color-warn: #e5503f;
+  --color-paper: #efe9d6;
+  --color-ink: #1c2529;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: #cfe3f0;
+}
+
+/* Glass screens show nothing but their dark face without electrical power */
+[data-dark="true"] > svg > * {
+  opacity: 0;
+}
