@@ -1,5 +1,6 @@
 import { Canvas, useFrame } from '@react-three/fiber'
 import { game, useGame } from '../game/game'
+import { VR } from '../vr/VR'
 import { Aircraft } from './Aircraft'
 import { Airports } from './Airports'
 import { FOG_DENSITY, HORIZON_COLOR } from './atmosphere'
@@ -38,6 +39,7 @@ export function Scene() {
       <color attach="background" args={[HORIZON_COLOR]} />
       <fogExp2 attach="fog" args={[HORIZON_COLOR, FOG_DENSITY]} />
       <Simulation />
+      <VR />
       <Environment />
       <CameraRig />
       <Sky />

@@ -22,6 +22,7 @@ import {
   type RunwayEnd
 } from '../world/approaches'
 import { AIRPORTS, fromStrip, heightAt } from '../world/island'
+import { eye } from './eye'
 import { type Light, lightMaterial, pointScale, pointsGeometry, type Rgb } from './lightPoints'
 
 const WHITE: Rgb = [1, 0.96, 0.86]
@@ -132,10 +133,14 @@ export function RunwayLights() {
     return geometry
   }, [units])
   useFrame(({ gl, camera }) => {
-    gl.getDrawingBufferSize(drawingSize)
-    pointScale.value = (drawingSize.y * camera.projectionMatrix.elements[5]) / 2
+    // In VR each eye draws its own view, so its height and lens set the size
+    const view = gl.xr.isPresenting ? gl.xr.getCamera().cameras[0] : undefined
+    if (view) pointScale.value = (view.viewport.w * view.projectionMatrix.elements[5]) / 2
+    else {
+      gl.getDrawingBufferSize(drawingSize)
+      pointScale.value = (drawingSize.y * camera.projectionMatrix.elements[5]) / 2
+    }
     const colors = papi.getAttribute('color') as BufferAttribute
-    const eye = camera.position
     units.forEach((unit, i) => {
       const dx = eye.x - unit.x
       const dz = eye.z - unit.z
@@ -188,7 +193,7 @@ export function ApproachPath() {
   })
   const centres = useMemo(() => Array.from({ length: RING_COUNT }, () => new Vector3()), [])
   const hidden = useRef(-1)
-  useFrame(({ camera }) => {
+  useFrame(() => {
     const { approach } = game.nav
     const spec = game.sim.spec
     if (approach !== shown.current.approach || spec !== shown.current.spec) {
@@ -208,7 +213,7 @@ export function ApproachPath() {
     // A ring close to the camera would fill the view, so it hides while the aircraft passes
     let near = -1
     for (let i = 0; i < RING_COUNT; i++) {
-      if (centres[i].distanceTo(camera.position) < NEAR_RING) near = i
+      if (centres[i].distanceTo(eye) < NEAR_RING) near = i
     }
     if (near === hidden.current) return
     hidden.current = near

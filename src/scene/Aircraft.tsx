@@ -27,6 +27,8 @@ const RUDDER_TRAVEL = 0.45
 const FLAP_TRAVEL = 0.6
 const AIRBRAKE_TRAVEL = 1
 
+/** Parts of the airframe the pilot sees from the seat in VR. */
+const OUTSIDE_PARTS: ReadonlySet<PartName> = new Set(['leftWing', 'rightWing', 'tail'])
 // Colours the paint burns to after a crash on land
 const SOOT = new Color('#3a3733')
 
@@ -81,18 +83,24 @@ function useAirframe(spec: AircraftSpec, body: string, accent: string): Airframe
       root.current.quaternion.identity()
       root.current.visible = true
       parts.current.forEach((part, i) => {
-        part?.position.copy(wreck.pieces[i].position)
-        part?.quaternion.copy(wreck.pieces[i].orientation)
+        if (!part) return
+        part.position.copy(wreck.pieces[i].position)
+        part.quaternion.copy(wreck.pieces[i].orientation)
+        part.visible = true
       })
     } else {
       root.current.position.copy(sim.position)
       root.current.quaternion.copy(sim.orientation)
-      // The bombsight looks out from under the belly, past where the airframe would be
-      const { camera, bombsight } = game.getState()
-      root.current.visible = camera === 'chase' && !bombsight
+      // The bombsight looks out from under the belly, past where the airframe would be.
+      // In VR the pilot sees the wings and tail around the cockpit.
+      const { camera, bombsight, vr } = game.getState()
+      root.current.visible = vr || (camera === 'chase' && !bombsight)
       parts.current.forEach((part, i) => {
-        part?.position.copy(spec.breakup[i].rest)
-        part?.quaternion.identity()
+        if (!part) return
+        part.position.copy(spec.breakup[i].rest)
+        part.quaternion.identity()
+        // From the seat the body would wall in the pilot, so VR shows only wings and tail
+        part.visible = !vr || OUTSIDE_PARTS.has(PART_NAMES[i])
       })
     }
     // Paint burns black within a second of a crash on land
@@ -2771,7 +2779,8 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
   const frame = useRef<Group>(null)
   useFrame(() => {
     if (!frame.current) return
-    frame.current.visible = game.getState().camera === 'cockpit' && !game.wreck.active
+    const { camera, vr } = game.getState()
+    frame.current.visible = camera === 'cockpit' && !vr && !game.wreck.active
     frame.current.position.copy(game.sim.position)
     frame.current.quaternion.copy(game.sim.orientation)
   })

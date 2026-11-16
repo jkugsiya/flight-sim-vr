@@ -1,10 +1,11 @@
 {
-  "name": "flight-sim",
+  "name": "flight-sim-vr",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "certs": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -days 825 -keyout certs/key.pem -out certs/cert.pem -subj /CN=island-flyer-vr -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$(ipconfig getifaddr en0)\"",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc",

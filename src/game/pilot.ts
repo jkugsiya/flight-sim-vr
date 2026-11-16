@@ -24,6 +24,8 @@ const RAMP_SECONDS = 0.6
 const FINE_SHARE = 0.35
 const THROTTLE_RATE = 0.5
 const TRIM_RATE = 0.25
+// Stick or yoke travel, as a share of full, that overpowers the autopilot and switches it off
+const OVERRIDE = 0.3
 // Autopilot knob speeds per second while held: radians, metres, m/s, and m/s of climb
 const HEADING_RATE = 0.35
 const ALTITUDE_RATE = 60
@@ -104,9 +106,39 @@ const PARKED: Omit<Controls, 'engineSwitches'> = {
   fuelDump: false
 }
 
+/**
+ * Controls moved by VR hands or controllers. A null axis leaves that control to the keyboard.
+ * The VR cockpit writes them every frame.
+ */
+export type Analog = {
+  /** Stick or yoke from -1 to 1: back raises the nose, right rolls right. */
+  stick: { pitch: number; roll: number } | null
+  /** Rudder from -1 to 1, positive yaws right. */
+  yaw: number | null
+  /** Throttle lever from 0 to 1. Moving it takes over from the autothrottle. */
+  throttle: number | null
+  /** Wheel brakes from 0 to 1. */
+  brake: number
+  /** Trim switch from -1, nose down, to 1, nose up. */
+  trim: number
+  /**
+   * True in VR, which has no rudder pedals: the stick steers on the ground, and the yaw
+   * damper balances turns in the air, unless a thumbstick works the rudder.
+   */
+  noPedals: boolean
+}
+
 /** Turns held keys into stick, rudder, and lever positions, and flies the autopilot. */
 export class Pilot {
   readonly controls: Controls = { ...PARKED, engineSwitches: ENGINE_KEYS.map(() => false) }
+  readonly analog: Analog = {
+    stick: null,
+    yaw: null,
+    throttle: null,
+    brake: 0,
+    trim: 0,
+    noPedals: false
+  }
   /**
    * Autopilot panel. The knobs hold a heading in radians, an altitude in metres, and a climb
    * rate in m/s; they can be set with the autopilot off. `hold` is the altitude ALT keeps.
@@ -335,7 +367,11 @@ export class Pilot {
     const stick = this.axis('ArrowDown', 'ArrowUp')
     const wheel = this.axis('ArrowRight', 'ArrowLeft')
     const lever = this.axis('KeyW', 'KeyS')
-    const { autopilot } = this
+    const { autopilot, analog } = this
+    // A firm push or pull on the stick takes over from the autopilot, as in a real cockpit
+    if (autopilot.on && analog.stick) {
+      if (Math.hypot(analog.stick.pitch, analog.stick.roll) > OVERRIDE) this.disengage(true)
+    }
     // An autoland stays engaged on the runway, steering and braking down to taxi speed
     const rollingOut = this.landing(sim, nav) && sim.groundSpeed > ROLLOUT_END
     if ((sim.onGround && !rollingOut) || sim.stall > 0.5 || !sim.powered) this.disengage()
@@ -373,21 +409,36 @@ export class Pilot {
       )
       autopilot.verticalSpeed += this.axis('BracketRight', 'BracketLeft') * VERTICAL_SPEED_RATE * dt
       this.fly(dt, sim, nav, rollReach, pitchReach)
+    } else if (analog.stick && stick === 0 && wheel === 0) {
+      // A hand on the stick moves the surfaces at once: the cockpit control smooths it
+      c.pitch = analog.stick.pitch * pitchReach
+      c.roll = analog.stick.roll * rollReach
     } else {
       c.pitch = this.deflect(c.pitch, stick * pitchReach, dt, PITCH_RATE, 'ArrowDown', 'ArrowUp')
       c.roll = this.deflect(c.roll, wheel * rollReach, dt, DEFLECT_RATE, 'ArrowRight', 'ArrowLeft')
     }
 
-    if (this.autothrottle.on) this.flyThrottle(dt, sim, lever)
+    if (analog.throttle !== null && lever === 0) {
+      this.autothrottle.on = false
+      c.throttle = analog.throttle
+    } else if (this.autothrottle.on) this.flyThrottle(dt, sim, lever)
     else c.throttle = clamp(c.throttle + lever * THROTTLE_RATE * dt, 0, 1)
     this.lastAirspeed = airspeed
 
     if (spec.autoFlaps) c.flapNotch = c.gearDown ? spec.flapLabels.length - 1 : 0
     const pedals = this.axis('KeyD', 'KeyA')
-    if (autopilot.on && pedals === 0 && sim.onGround) {
+    // Without pedals, the stick steers the nose wheel on the ground
+    const steer = analog.noPedals && sim.onGround ? (analog.stick?.roll ?? null) : null
+    const handRudder = pedals === 0 ? (analog.yaw ?? steer) : null
+    // Without pedals in the air, the yaw damper balances the turns as the autopilot's does
+    const damped = autopilot.on || (analog.noPedals && !sim.onGround)
+    if (handRudder !== null) {
+      c.yaw = handRudder
+      this.rudderHold = 0
+    } else if (autopilot.on && pedals === 0 && sim.onGround) {
       // Rolling out after an autoland: the rudder steers along the runway
       c.yaw = this.rudderHold
-    } else if (autopilot.on && pedals === 0) {
+    } else if (damped && pedals === 0) {
       // Yaw damper: the autopilot sets the rudder that balances uneven engines, as after an
       // engine failure, and works it to centre the slip ball
       // Both the slip it feels and the rudder's bite grow as the airspeed squared, so above
@@ -406,7 +457,8 @@ export class Pilot {
     }
     const trim = this.axis('KeyE', 'KeyQ')
     c.trim = clamp(c.trim + trim * TRIM_RATE * this.ramp('KeyE', 'KeyQ') * dt, -1, 1)
-    c.brake = this.held.has('Space') ? 1 : 0
+    c.trim = clamp(c.trim + analog.trim * TRIM_RATE * dt, -1, 1)
+    c.brake = this.held.has('Space') ? 1 : analog.brake
     c.brakeLeft = this.held.has('Comma') ? 1 : 0
     c.brakeRight = this.held.has('Period') ? 1 : 0
   }
@@ -677,12 +729,13 @@ export class Pilot {
     this.autothrottle.speed = sim.velocity.length()
   }
 
-  private disengage() {
+  /** Switches off the autopilot, and the autothrottle too unless `keepThrottle`. */
+  private disengage(keepThrottle = false) {
     this.rollTrim = 0
     this.autopilot.on = false
     this.autopilot.lateral = 'HDG'
     this.autopilot.vertical = 'ALT'
-    this.autothrottle.on = false
+    if (!keepThrottle) this.autothrottle.on = false
     this.climbTrim = 0
   }
 

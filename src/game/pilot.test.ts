@@ -73,3 +73,57 @@ test("the Mustang's supercharger carries it past 430 mph at 25,000 ft", () => {
   expect(sim.crash).toBeNull()
   expect(sim.trueAirspeed).toBeGreaterThan(192)
 })
+
+/** An A320 trimmed for level flight at 5,000 ft with the autopilot and autothrottle on. */
+function cruisingA320() {
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  if (!spec) throw new Error('Missing a320')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeInAir(-80_000, 1500, 60_000, Math.PI / 2, 120)
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, new Vector3()))
+  pilot.engage(true, sim)
+  pilot.toggleAutothrottle(sim)
+  return { sim, pilot }
+}
+
+test('a light touch on a VR stick leaves the autopilot on, a firm pull takes over', () => {
+  const { sim, pilot } = cruisingA320()
+  pilot.analog.stick = { pitch: 0.1, roll: 0 }
+  pilot.update(STEP, sim)
+  expect(pilot.autopilot.on).toBe(true)
+
+  pilot.analog.stick = { pitch: 0.6, roll: 0 }
+  pilot.update(STEP, sim)
+  expect(pilot.autopilot.on).toBe(false)
+  // The autothrottle keeps the speed while the pilot hand-flies
+  expect(pilot.autothrottle.on).toBe(true)
+  expect(pilot.controls.pitch).toBeGreaterThan(0)
+})
+
+test('grabbing the VR throttle lever takes over from the autothrottle', () => {
+  const { sim, pilot } = cruisingA320()
+  pilot.analog.throttle = 0.2
+  pilot.update(STEP, sim)
+  expect(pilot.autothrottle.on).toBe(false)
+  expect(pilot.controls.throttle).toBe(0.2)
+})
+
+test('without pedals, the VR stick steers on the ground and a thumbstick rudder wins', () => {
+  const spec = HANGAR.find(candidate => candidate.id === 'c172')
+  if (!spec) throw new Error('Missing c172')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeOnGround(0, 0, 0)
+  sim.onGround = true
+  const pilot = new Pilot()
+  pilot.resetForGround(sim, false)
+  pilot.analog.noPedals = true
+  pilot.analog.stick = { pitch: 0, roll: 0.5 }
+  pilot.update(STEP, sim)
+  expect(pilot.controls.yaw).toBe(0.5)
+
+  pilot.analog.yaw = -0.4
+  pilot.update(STEP, sim)
+  expect(pilot.controls.yaw).toBe(-0.4)
+})

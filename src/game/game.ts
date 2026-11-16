@@ -52,6 +52,8 @@ export type GameState = {
   camera: CameraMode
   /** Looking down from the bomb bay with the aiming cross. Tab switches it on and off. */
   bombsight: boolean
+  /** True while a VR headset shows the game from the pilot's seat. */
+  vr: boolean
   wind: WindLevel
   muted: boolean
   /** Live landing advice on screen. */
@@ -156,6 +158,7 @@ class Game {
   private state: GameState = {
     status: 'menu',
     bombsight: false,
+    vr: false,
     ...savedState(),
     crash: null,
     crashShown: false,
@@ -169,6 +172,8 @@ class Game {
     GameState,
     'selected' | 'departure' | 'destination' | 'weather' | 'time' | 'wind'
   > | null = null
+  /** Graphics and camera to put back when the headset comes off. */
+  private beforeVR: Pick<GameState, 'graphics' | 'camera'> | null = null
   private liftoffTime: number | null = null
   private sinkRate = 0
   private touchdownRate = 0
@@ -403,6 +408,9 @@ class Game {
     this.nav.load(planRoute({ ...liftOff, heading }, destination, selected, WIND_FROM), this.sim)
   }
 
+  /** Creates the sound engine. Browsers allow this only during a click, such as Enter VR. */
+  prepareSound = () => this.sound.start()
+
   pause = () => {
     if (this.state.status !== 'flying') return
     this.pilot.releaseAll()
@@ -428,6 +436,64 @@ class Game {
   }
 
   toggleCamera = () => this.change({ camera: this.state.camera === 'chase' ? 'cockpit' : 'chase' })
+
+  /**
+   * Switches to the headset: the pilot's seat, and graphics light enough to hold the
+   * headset's frame rate. Taking it off puts back the player's own choices. Neither is saved.
+   */
+  setVR = (on: boolean) => {
+    if (on === this.state.vr) return
+    if (on) {
+      this.beforeVR = { graphics: this.state.graphics, camera: this.state.camera }
+      this.setState({ vr: true, camera: 'cockpit', graphics: VR_GRAPHICS })
+    } else {
+      this.setState({ vr: false, ...this.beforeVR })
+      this.beforeVR = null
+    }
+  }
+
+  /** Steps to the next approach, nearest airport first, and stops the autopilot flying the old one. */
+  cycleApproach = () => {
+    this.nav.cycle(this.sim, WIND_FROM)
+    this.pilot.flyApproach(false, this.sim, this.nav)
+  }
+
+  /** Clears the selected approach. */
+  clearApproach = () => {
+    this.nav.select(null, this.sim)
+    this.pilot.flyApproach(false, this.sim, this.nav)
+  }
+
+  /** Lets the autopilot fly the approach, picking the best one first if none is selected. */
+  toggleApproachAutopilot = () => {
+    if (!this.nav.approach) this.nav.cycle(this.sim, WIND_FROM)
+    this.pilot.flyApproach(!this.pilot.flyingApproach, this.sim, this.nav)
+  }
+
+  /**
+   * Fires a missile, or in the bombsight releases a bomb and starts a string while `held`.
+   * Returns true when something left the aircraft or a release was armed.
+   */
+  release = () => {
+    if (this.state.status !== 'flying') return false
+    if (this.bombs.missiles > 0) {
+      const before = this.bombs.missiles
+      this.bombs.fire(this.sim)
+      return this.bombs.missiles < before
+    }
+    if (!this.state.bombsight) return false
+    const before = this.bombs.loaded
+    const armed = this.bombs.armed
+    this.bombs.release(this.sim)
+    this.rippleHeld = true
+    this.rippleClock = RIPPLE_START
+    return this.bombs.loaded < before || this.bombs.armed !== armed
+  }
+
+  /** Stops the string of bombs a held release started. */
+  endRelease = () => {
+    this.rippleHeld = false
+  }
   toggleMap = () => {
     const next = { small: 'large', large: 'hidden', hidden: 'small' } as const
     this.change({ map: next[this.state.map] })
@@ -444,8 +510,10 @@ class Game {
   /** Applies a change the player made, and remembers it for the next visit. */
   private change(patch: Partial<GameState>) {
     this.setState(patch)
-    // During a mission, the free flight choices it set aside are the ones to keep
+    // During a mission, the free flight choices it set aside are the ones to keep,
+    // and in VR, the graphics and camera from before the headset went on
     const free = { ...this.state, ...this.freeFlight }
+    const own = { ...this.state, ...this.beforeVR }
     saveSettings({
       wind: free.wind,
       weather: free.weather,
@@ -453,8 +521,8 @@ class Game {
       muted: this.state.muted,
       coach: this.state.coach,
       map: this.state.map,
-      camera: this.state.camera,
-      graphics: this.state.graphics,
+      camera: own.camera,
+      graphics: own.graphics,
       aircraft: free.selected.id,
       departure: free.departure.code,
       destination: free.destination?.code ?? null
@@ -528,16 +596,8 @@ class Game {
       // Enter releases a bomb in the bombsight, and starts or resumes from the menus
       if (event.code === 'Enter' && status === 'flying') {
         event.preventDefault()
-        if (event.repeat) return
         // Missiles fire straight from the normal view, with no sight to open
-        if (this.bombs.missiles > 0) {
-          this.bombs.fire(this.sim)
-          return
-        }
-        if (!this.state.bombsight) return
-        this.bombs.release(this.sim)
-        this.rippleHeld = true
-        this.rippleClock = RIPPLE_START
+        if (!event.repeat) this.release()
         return
       }
       if (event.code === 'Enter' && !widget) {
@@ -550,22 +610,22 @@ class Game {
       if (event.code === 'KeyC' && !event.repeat) this.toggleCamera()
       else if (event.code === 'KeyM' && !event.repeat) this.toggleMap()
       else if (event.code === 'KeyN' && !event.repeat) {
-        if (event.shiftKey) this.nav.select(null, this.sim)
-        else this.nav.cycle(this.sim, WIND_FROM)
-        this.pilot.flyApproach(false, this.sim, this.nav)
+        if (event.shiftKey) this.clearApproach()
+        else this.cycleApproach()
       } else if (event.code === 'KeyT' && !event.repeat) {
-        // With nothing picked yet, take the best approach at the nearest airport
-        if (!this.nav.approach) this.nav.cycle(this.sim, WIND_FROM)
-        this.pilot.flyApproach(!this.pilot.flyingApproach, this.sim, this.nav)
+        this.toggleApproachAutopilot()
       } else if (this.pilot.press(event.code, event.repeat, this.sim, this.nav, event.shiftKey)) {
         event.preventDefault()
       }
     }
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code === 'Enter') this.rippleHeld = false
+      if (event.code === 'Enter') this.endRelease()
       this.pilot.release(event.code)
     }
-    const onBlur = () => this.pause()
+    // Entering VR can take the focus from the page, which must not pause the flight
+    const onBlur = () => {
+      if (!this.state.vr) this.pause()
+    }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onBlur)
@@ -843,6 +903,9 @@ function savedState() {
     flown: selected
   }
 }
+
+/** Graphics in the headset: what a Quest 2 can draw twice, once per eye, 72 times a second. */
+const VR_GRAPHICS = GRAPHICS_PRESETS.low
 
 export const game = new Game()
 

@@ -20,6 +20,7 @@ import { WEATHER } from '../world/weather'
 import { cloudLight, fogUniform, HAZE_GLSL, horizon, SUN_DIRECTION, sunColor } from './atmosphere'
 import { useDisposal } from './dispose'
 import { environment, updateEnvironment } from './environment'
+import { eye } from './eye'
 import {
   LOG_DEPTH_FRAGMENT,
   LOG_DEPTH_FRAGMENT_PARS,
@@ -30,9 +31,9 @@ import { detailTexture } from './textures'
 
 /** Sets the sky, haze, and light for the time of day, the weather, and the camera height. */
 export function Environment() {
-  useFrame(({ scene, camera }) => {
+  useFrame(({ scene }) => {
     const { time, weather } = game.getState()
-    updateEnvironment(time, weather, camera.position.y)
+    updateEnvironment(time, weather, eye.y)
     const fog = scene.fog as FogExp2 | Fog | null
     if (fog && 'density' in fog) {
       fog.color.copy(horizon)
@@ -137,14 +138,10 @@ export function CloudDeck() {
     return sheets
   }, [deck, material])
   useDisposal(mesh?.geometry)
-  useFrame(({ camera }) => {
+  useFrame(() => {
     if (!mesh) return
     // Keep the deck under the camera, snapped so its texture does not slide
-    mesh.position.set(
-      Math.round(camera.position.x / 500) * 500,
-      0,
-      Math.round(camera.position.z / 500) * 500
-    )
+    mesh.position.set(Math.round(eye.x / 500) * 500, 0, Math.round(eye.z / 500) * 500)
     material.uniforms.darkness.value = weather === 'rain' ? 0.25 : 0
   })
   return mesh && <primitive object={mesh} />
@@ -223,13 +220,13 @@ export function Rain() {
     return lines
   }, [detailed])
   useDisposal(rain)
-  useFrame(({ camera, clock }) => {
+  useFrame(({ clock }) => {
     const falling = weather === 'rain' && environment.raining
     rain.visible = falling
     if (!falling) return
     const uniforms = (rain.material as ShaderMaterial).uniforms
     uniforms.time.value = clock.elapsedTime
-    uniforms.eye.value.copy(camera.position)
+    uniforms.eye.value.copy(eye)
     // Drops fall at 9 m/s; the aircraft's own speed sweeps them back past the camera
     const { sim } = game
     airflow.set(0, -9, 0).sub(sim.velocity).multiplyScalar(0.035)

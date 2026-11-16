@@ -22,6 +22,7 @@ import { GUIDED_REACH, type Target } from '../game/bombs'
 import { game, useGame } from '../game/game'
 import { BLAST_REACH, SITE_COUNT } from '../game/ruins'
 import { heightAt } from '../world/island'
+import { eye, eyeQuaternion } from './eye'
 import { depthBias } from './logDepth'
 
 const QUARTER_TURN = Math.PI / 2
@@ -156,15 +157,16 @@ function AimCross() {
       }),
     []
   )
-  useFrame(({ camera }) => {
+  useFrame(() => {
     const { bombs } = game
     const group = cross.current
     if (!group) return
-    // Only the bombsight shows the cross, so normal flying stays uncluttered
+    // Only the bombsight shows the cross, so normal flying stays uncluttered.
+    // In VR the sight is a switch, and the cross on the ground is the whole sight.
     group.visible = bombs.aiming && game.getState().bombsight
     if (!group.visible) return
     group.position.copy(bombs.aim).setY(bombs.aim.y + 1)
-    group.scale.setScalar(Math.max(4, bombs.aim.distanceTo(camera.position) * CROSS_SCALE))
+    group.scale.setScalar(Math.max(4, bombs.aim.distanceTo(eye) * CROSS_SCALE))
     const index = bombs.nearestStanding(bombs.aim.x, bombs.aim.z)
     const nearest = bombs.targets[index]
     const zone = bombs.guided ? GUIDED_REACH : (nearest?.radius ?? 0)
@@ -262,7 +264,7 @@ function LockBoxes({ targets }: { targets: Target[] }) {
       ),
     [targets]
   )
-  useFrame(({ camera }) => {
+  useFrame(() => {
     const { bombs } = game
     const armed = bombs.missiles > 0 || bombs.flying.length > 0
     targets.forEach((target, i) => {
@@ -272,10 +274,8 @@ function LockBoxes({ targets }: { targets: Target[] }) {
       if (!box.visible) return
       const middle = heightAt(target.x, target.z) + (target.height ?? 8) / 2
       box.position.set(target.x, middle, target.z)
-      box.quaternion.copy(camera.quaternion)
-      box.scale.setScalar(
-        Math.max(target.radius * 2.4, box.position.distanceTo(camera.position) * BOX_SCALE)
-      )
+      box.quaternion.copy(eyeQuaternion)
+      box.scale.setScalar(Math.max(target.radius * 2.4, box.position.distanceTo(eye) * BOX_SCALE))
       const locked = bombs.lock === i
       materials[i].color.set(locked ? '#ff3b30' : '#ffffff')
       materials[i].opacity = locked ? 1 : 0.7

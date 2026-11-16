@@ -43,6 +43,7 @@ import {
 import { billboardMaterial, makeBillboards } from './billboards'
 import { disposeAll } from './dispose'
 import { environment } from './environment'
+import { eye } from './eye'
 import {
   LOG_DEPTH_FRAGMENT,
   LOG_DEPTH_FRAGMENT_PARS,
@@ -112,7 +113,7 @@ export function Sky() {
     }),
     []
   )
-  useFrame(({ camera }) => mesh.current?.position.copy(camera.position))
+  useFrame(() => mesh.current?.position.copy(eye))
   return (
     <mesh ref={mesh} scale={40_000} renderOrder={-1} frustumCulled={false}>
       <sphereGeometry args={[1, 32, 24]} />
@@ -614,11 +615,11 @@ function Undergrowth() {
     },
     [bushes]
   )
-  useFrame(({ camera }) => {
+  useFrame(() => {
     for (const shrubs of bushes) {
       const region = shrubs.boundingSphere
       if (!region) continue
-      shrubs.visible = region.center.distanceTo(camera.position) < region.radius + SHRUB_RANGE
+      shrubs.visible = region.center.distanceTo(eye) < region.radius + SHRUB_RANGE
     }
   })
   return bushes.map(shrubs => <primitive key={shrubs.uuid} object={shrubs} />)
@@ -635,11 +636,11 @@ export function Trees() {
       trees.count = fewer ? Math.ceil(trees.userData.total / 3) : trees.userData.total
     }
   }, [forests, fewer])
-  useFrame(({ camera }) => {
+  useFrame(() => {
     for (const trees of forests) {
       const region = trees.boundingSphere
       if (!region) continue
-      trees.visible = region.center.distanceTo(camera.position) < region.radius + FOREST_RANGE
+      trees.visible = region.center.distanceTo(eye) < region.radius + FOREST_RANGE
     }
   })
   return (

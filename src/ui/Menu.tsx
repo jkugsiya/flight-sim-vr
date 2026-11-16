@@ -7,7 +7,7 @@ import { Key } from './Hud'
 import { MissionActions, MissionsPanel } from './Missions'
 import { FPM_PER_MS, KNOTS_PER_MS } from './telemetry'
 
-const CRASH_REASONS: Record<CrashReason, string> = {
+export const CRASH_REASONS: Record<CrashReason, string> = {
   terrain: 'The aircraft hit the ground.',
   water: 'The aircraft went into the sea.',
   'hard-landing': 'You touched down too hard. Keep the descent under 700 feet per minute.',

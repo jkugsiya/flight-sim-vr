@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { type PerspectiveCamera, Vector3 } from 'three'
 import { game, useGame } from '../game/game'
 import { heightAt } from '../world/island'
+import { eye, eyeQuaternion } from './eye'
 
 const FORWARD = new Vector3(0, 0, -1)
 /** Vertical field of view in degrees from the pilot's seat. */
@@ -34,6 +35,8 @@ export function CameraRig() {
   const trail = useRef(new Vector3(0, 0, -1))
   const orbit = useRef({ angle: 0, started: false, focus: new Vector3() })
   const bombsight = useGame(state => state.bombsight)
+  // The headset sets its own field of view, so leaving VR sets this one back
+  const vr = useGame(state => state.vr)
   // Where the bombsight looks, eased so it swings smoothly between the cross and a blast
   const sight = useRef<Vector3 | null>(null)
 
@@ -45,11 +48,18 @@ export function CameraRig() {
   }, [camera, size])
 
   useEffect(() => {
+    if (vr) return
     camera.fov = bombsight ? SIGHT_FOV : mode === 'cockpit' ? COCKPIT_FOV : 58
     camera.updateProjectionMatrix()
-  }, [camera, mode, bombsight])
+  }, [camera, mode, bombsight, vr])
 
   useFrame((_, delta) => {
+    // In VR the headset places the camera in the cockpit seat
+    if (game.getState().vr) {
+      camera.getWorldPosition(eye)
+      camera.getWorldQuaternion(eyeQuaternion)
+      return
+    }
     const { sim, wreck, effects, bombs } = game
     const view = sim.spec.camera
     const circle = orbit.current
@@ -129,6 +139,8 @@ export function CameraRig() {
       camera.rotateX((Math.random() - 0.5) * shake)
       camera.rotateZ((Math.random() - 0.5) * shake)
     }
+    eye.copy(camera.position)
+    eyeQuaternion.copy(camera.quaternion)
   })
   return null
 }
