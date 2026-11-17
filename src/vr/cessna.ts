@@ -689,9 +689,8 @@ export class CessnaCockpit implements CockpitView {
     c.fuelPumps = this.written !== 'off'
 
     const { analog } = pilot
-    if (this.yoke.held || Math.abs(this.yoke.pitch) + Math.abs(this.yoke.roll) > 0.002) {
-      analog.stick = this.yoke.output
-    }
+    this.yoke.follow ??= () => pilot.controls
+    if (this.yoke.held) analog.stick = this.yoke.output
     if (this.throttle.held) analog.throttle = this.throttle.value
     if (this.brake.held) analog.brake = Math.max(analog.brake, this.brake.value)
 

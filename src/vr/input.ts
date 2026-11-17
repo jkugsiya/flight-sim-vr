@@ -122,7 +122,7 @@ const v = new Vector3()
 const w = new Vector3()
 const q = new Quaternion()
 
-function interactor(): Interactor {
+export function interactor(): Interactor {
   return {
     kind: 'hand',
     handedness: 'none',

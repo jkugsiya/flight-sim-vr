@@ -1,12 +1,13 @@
 import { type Camera, Group, type PerspectiveCamera, Vector3, type WebGLRenderer } from 'three'
 import { game } from '../game/game'
 import { heightAt } from '../world/island'
-import { CessnaCockpit } from './cessna'
-import { Cockpit, type CockpitView } from './cockpit'
+import type { CockpitView } from './cockpit'
 import type { Buzz } from './controls'
+import { cockpitFor } from './decks'
 import { Feel, pulse } from './feel'
 import { Gamepads } from './gamepad'
 import { XRInput } from './input'
+import { MouseInput } from './mouse'
 import { exitVR } from './session'
 import { Tablet } from './tablet'
 
@@ -18,11 +19,15 @@ const other = new Vector3()
 const VR_NEAR = 0.03
 // Metres above the ground the view stays after a crash
 const CRASH_HEIGHT = 3
+// Vertical field of view of the seat view on the page, in degrees: wide, as a headset's is
+const PREVIEW_FOV = 80
 
 /**
  * The pilot's seat in VR. The seat rides on the aircraft at its eye point and carries the
  * cockpit and the tablet. Inside it, the dolly holds the headset's tracking space, offset
  * so the pilot's head sits at the eye point facing forward.
+ *
+ * The same seat previews on the page in the pilot seat view, with the mouse for a hand.
  */
 export class Rig {
   readonly seat = new Group()
@@ -36,6 +41,9 @@ export class Rig {
   private recenterIn = 0
   private crashView = false
   private time = 0
+  /** True while the seat shows on the page rather than in the headset. */
+  private previewing = false
+  private mouse: MouseInput | null = null
 
   constructor(private readonly gl: WebGLRenderer) {
     this.seat.add(this.dolly)
@@ -53,6 +61,7 @@ export class Rig {
   }
 
   private readonly start = () => {
+    this.stopPreview(false)
     const camera = this.camera
     if (camera) {
       this.dolly.add(camera)
@@ -114,15 +123,54 @@ export class Rig {
     this.tablet.refresh()
   }
 
+  /** Shows the seat on the page, with the mouse to look round and work the controls. */
+  private startPreview() {
+    const camera = this.camera
+    if (!camera) return
+    this.previewing = true
+    this.dolly.position.set(0, 0, 0)
+    this.dolly.quaternion.identity()
+    this.dolly.add(camera)
+    camera.near = VR_NEAR
+    camera.fov = PREVIEW_FOV
+    camera.clearViewOffset()
+    camera.updateProjectionMatrix()
+    this.seat.visible = true
+    this.placeOnAircraft()
+    this.mouse ??= new MouseInput(camera, this.seat)
+    this.mouse.attach(this.gl.domElement)
+  }
+
+  /** Leaves the page preview; `release` hands the camera back to the page's own views. */
+  private stopPreview(release = true) {
+    if (!this.previewing) return
+    this.previewing = false
+    this.mouse?.stop()
+    if (!release) return
+    const camera = this.camera
+    if (camera) {
+      this.dolly.remove(camera)
+      camera.near = 1
+      camera.updateProjectionMatrix()
+    }
+    this.seat.visible = false
+    this.cockpit?.dispose()
+    this.cockpit = null
+    resetAnalog(false)
+  }
+
   /** Runs after the simulation step, before anything is drawn. */
   frame(dt: number) {
-    if (!game.getState().vr) return
+    const presenting = this.gl.xr.isPresenting
+    if (!game.seated) {
+      this.stopPreview()
+      return
+    }
+    if (!presenting && !this.previewing) this.startPreview()
     const { sim } = game
     if (this.cockpit?.spec !== sim.spec) {
       this.cockpit?.dispose()
-      // The Cessna has its own cockpit, true to the real one; the others share a generic one
-      this.cockpit =
-        sim.spec.id === 'c172' ? new CessnaCockpit(sim.spec, feel) : new Cockpit(sim.spec, feel)
+      this.cockpit = cockpitFor(sim.spec, feel)
       this.seat.add(this.cockpit.group)
       this.tablet.place(this.cockpit.tablet.position, this.cockpit.tablet.rotation)
       this.tablet.setChecklists(this.cockpit.checklists)
@@ -132,7 +180,13 @@ export class Rig {
     if (this.recenterIn > 0 && --this.recenterIn === 0) this.recenter()
 
     this.time += dt
-    const interactors = this.input.update(dt)
+    let interactors = this.input.update(dt)
+    if (this.previewing && this.mouse) {
+      this.mouse.aim()
+      this.mouse.setTargets([cockpit.group, this.tablet.group])
+      const hand = this.mouse.interactor
+      interactors = this.mouse.update(cockpit.controls.heldBy(hand))
+    }
     resetAnalog(true)
     cockpit.update(dt, interactors, this.time)
     this.gamepads.update(dt, this.input, cockpit.flightHeld, cockpit.throttleHeld)

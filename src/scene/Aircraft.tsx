@@ -101,15 +101,16 @@ function useAirframe(spec: AircraftSpec, body: string, accent: string): Airframe
       root.current.position.copy(sim.position)
       root.current.quaternion.copy(sim.orientation)
       // The bombsight looks out from under the belly, past where the airframe would be.
-      // In VR the pilot sees the wings and tail around the cockpit.
-      const { camera, bombsight, vr } = game.getState()
-      root.current.visible = vr || (camera === 'chase' && !bombsight)
+      // From the VR seat the pilot sees the wings and tail around the cockpit.
+      const { camera, bombsight } = game.getState()
+      const seated = game.seated
+      root.current.visible = seated || (camera === 'chase' && !bombsight)
       parts.current.forEach((part, i) => {
         if (!part) return
         part.position.copy(spec.breakup[i].rest)
         part.quaternion.identity()
         // From the seat the body would wall in the pilot, so VR shows only wings and tail
-        part.visible = !vr || OUTSIDE_PARTS.has(PART_NAMES[i])
+        part.visible = !seated || OUTSIDE_PARTS.has(PART_NAMES[i])
       })
     }
     // Paint burns black within a second of a crash on land

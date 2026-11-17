@@ -405,9 +405,8 @@ export class Cockpit implements CockpitView {
     const { analog } = game.pilot
     const flight = this.flightControl
     // A stick springing back still moves the surfaces, until it is centred
-    if (flight.held || Math.abs(flight.pitch) + Math.abs(flight.roll) > 0.002) {
-      analog.stick = flight.output
-    }
+    flight.follow ??= () => game.pilot.controls
+    if (flight.held) analog.stick = flight.output
     if (this.throttle.held) analog.throttle = this.throttle.value
     analog.brake = Math.max(analog.brake, this.brake.value)
     if (this.trimHeld !== 0) analog.trim = this.trimHeld

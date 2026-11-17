@@ -35,27 +35,29 @@ export function CameraRig() {
   const trail = useRef(new Vector3(0, 0, -1))
   const orbit = useRef({ angle: 0, started: false, focus: new Vector3() })
   const bombsight = useGame(state => state.bombsight)
-  // The headset sets its own field of view, so leaving VR sets this one back
-  const vr = useGame(state => state.vr)
+  // The VR seat, in the headset or previewed on the page, sets its own field of view, so
+  // leaving it sets this one back
+  const seated = useGame(state => state.vr || state.camera === 'seat')
   // Where the bombsight looks, eased so it swings smoothly between the cross and a blast
   const sight = useRef<Vector3 | null>(null)
 
   // Shifts the view up so the horizon sits in the middle of the area above the instrument panel
   useEffect(() => {
+    if (seated) return
     const shift = horizonShift(size.height)
     camera.setViewOffset(size.width, size.height, 0, shift, size.width, size.height)
     return () => camera.clearViewOffset()
-  }, [camera, size])
+  }, [camera, size, seated])
 
   useEffect(() => {
-    if (vr) return
+    if (seated) return
     camera.fov = bombsight ? SIGHT_FOV : mode === 'cockpit' ? COCKPIT_FOV : 58
     camera.updateProjectionMatrix()
-  }, [camera, mode, bombsight, vr])
+  }, [camera, mode, bombsight, seated])
 
   useFrame((_, delta) => {
-    // In VR the headset places the camera in the cockpit seat
-    if (game.getState().vr) {
+    // In the VR seat the headset, or the mouse in the preview, places the camera
+    if (game.seated) {
       camera.getWorldPosition(eye)
       camera.getWorldQuaternion(eyeQuaternion)
       return

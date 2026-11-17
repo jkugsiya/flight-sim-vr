@@ -61,7 +61,7 @@ export type Settings = {
   muted: boolean
   coach: boolean
   map: 'small' | 'large' | 'hidden'
-  camera: 'chase' | 'cockpit'
+  camera: 'chase' | 'cockpit' | 'seat'
   graphics: Graphics
   /** Free flight choices: aircraft id and airport codes. */
   aircraft: string
@@ -122,7 +122,7 @@ export function loadSettings(): Settings {
       muted: oneOf(stored.muted, [true, false], defaults.muted),
       coach: oneOf(stored.coach, [true, false], oldCoach ? oldCoach !== 'off' : defaults.coach),
       map: oneOf(stored.map, ['small', 'large', 'hidden'], defaults.map),
-      camera: oneOf(stored.camera, ['chase', 'cockpit'], defaults.camera),
+      camera: oneOf(stored.camera, ['chase', 'cockpit', 'seat'], defaults.camera),
       graphics: readGraphics(stored.graphics),
       aircraft: typeof stored.aircraft === 'string' ? stored.aircraft : defaults.aircraft,
       departure: typeof stored.departure === 'string' ? stored.departure : defaults.departure,

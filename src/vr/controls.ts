@@ -8,7 +8,7 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   PlaneGeometry,
-  type Quaternion,
+  Quaternion,
   SphereGeometry,
   SRGBColorSpace,
   TorusGeometry,
@@ -37,6 +37,7 @@ export function shape(value: number) {
 const wrap = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle))
 const UP = new Vector3(0, 1, 0)
 const v = new Vector3()
+const offset = new Vector3()
 
 // Seconds back a released control rolls, to undo the drift of a hand opening
 const ROLLBACK = 0.12
@@ -59,6 +60,12 @@ export abstract class Control {
   lastPress = -1
   /** Hands holding this control, with what each needs to remember. */
   readonly holders = new Map<Interactor, unknown>()
+  /**
+   * Which way the panel under a pressable control faces: by default toward the pilot (+Z),
+   * otherwise turned, as on a sloping glareshield, the overhead panel, or the pedestal.
+   */
+  readonly face = new Quaternion()
+  private readonly unface = new Quaternion()
   private readonly glowing: MeshStandardMaterial[] = []
   private highlight = 0
 
@@ -96,14 +103,44 @@ export abstract class Control {
   }
 
   /**
+   * Mounts the control on a panel turned by `face`, and returns a group placed at `at` in
+   * the panel's own axes, where the control's model is built facing +Z.
+   */
+  protected mount(at: Vector3, face?: Quaternion) {
+    if (face) this.face.copy(face)
+    this.unface.copy(this.face).invert()
+    const mount = new Group()
+    mount.position.copy(at)
+    mount.quaternion.copy(this.face)
+    this.group.add(mount)
+    return mount
+  }
+
+  /** The point `along` metres out from `at` along the panel's facing. */
+  protected outFrom(at: Vector3, along: number) {
+    return v.set(0, 0, along).applyQuaternion(this.face).add(at)
+  }
+
+  /** A point relative to the press zone's centre, in the panel's own axes. */
+  local(point: Vector3, out = new Vector3()) {
+    return out.copy(point).sub(this.pressAt).applyQuaternion(this.unface)
+  }
+
+  /** A hand's turn about the panel's facing, in radians. */
+  protected twistOnFace(quaternion: Quaternion) {
+    const x = v.set(1, 0, 0).applyQuaternion(quaternion).applyQuaternion(this.unface)
+    return Math.atan2(x.y, x.x)
+  }
+
+  /**
    * Where a fingertip is: `in` the button, hovering in `front` of it, or `out`.
    * Once in, the zone grows a little, so a trembling finger does not press twice.
    */
   pressZone(point: Vector3, previous: 'in' | 'front' | 'out') {
-    const c = this.pressAt
-    const dx = Math.abs(point.x - c.x)
-    const dy = Math.abs(point.y - c.y)
-    const dz = point.z - c.z
+    const d = this.local(point, offset)
+    const dx = Math.abs(d.x)
+    const dy = Math.abs(d.y)
+    const dz = d.z
     const grow = previous === 'in' ? 1.35 : 1
     const front = 0.03 + (previous === 'in' ? 0.012 : 0)
     const { x, y } = this.pressHalf
@@ -152,17 +189,20 @@ export class Button extends Control {
       /** Cap width and height in metres. */
       size?: { w: number; h: number }
       color?: number
+      /** The panel's facing, when it does not face the pilot. */
+      face?: Quaternion
     }
   ) {
     super(group, buzz)
     this.pressable = true
     const { w, h } = options.size ?? { w: 0.042, h: 0.026 }
     this.pressHalf = { x: Math.max(0.012, w / 2 + 0.002), y: Math.max(0.01, h / 2 + 0.002) }
-    this.pressAt.copy(at).setZ(at.z + 0.012)
+    const mount = this.mount(at, options.face)
+    this.pressAt.copy(this.outFrom(at, 0.012))
     const plate = new Mesh(new BoxGeometry(w + 0.008, h + 0.008, 0.004), PLATE)
-    plate.position.copy(at).setZ(at.z + 0.002)
+    plate.position.z = 0.002
     this.cap = new Mesh(new BoxGeometry(w, h, 0.012), this.glowMaterial(options.color ?? 0x2b3035))
-    this.cap.position.copy(at).setZ(at.z + 0.008)
+    this.cap.position.z = 0.008
     this.lamp = new MeshBasicMaterial({ color: 0x0c1a10, toneMapped: false })
     // Only buttons with a state to show carry a lamp
     if (options.lit) {
@@ -170,7 +210,7 @@ export class Button extends Control {
       lamp.position.set(0, h * 0.23, 0.0061)
       this.cap.add(lamp)
     }
-    group.add(plate, this.cap)
+    mount.add(plate, this.cap)
   }
 
   tooltip() {
@@ -192,7 +232,7 @@ export class Button extends Control {
   update(dt: number) {
     this.flash = Math.max(0, this.flash - dt)
     const lit = this.options.lit?.() ?? 'off'
-    this.cap.position.z = this.pressAt.z - 0.004 - (this.flash > 0 ? 0.004 : 0)
+    this.cap.position.z = 0.008 - (this.flash > 0 ? 0.004 : 0)
     this.lamp.color.setHex(
       this.flash > 0 ? 0xffffff : lit === 'on' ? 0x2bff5a : lit === 'alert' ? 0xffa21a : 0x0c1a10
     )
@@ -227,6 +267,8 @@ export class Lever extends Control {
       get: () => number
       set: (value: number, released: boolean) => void
       detents?: number[]
+      /** Notches you feel click past, without the lever settling into them. */
+      notches?: number[]
       /** Returns to 0 when let go, while this says so. */
       spring?: boolean | (() => boolean)
       knob?: { color: number; shape: 'box' | 'ball' | 'wheel' | 'pull' | 'tee' }
@@ -284,8 +326,8 @@ export class Lever extends Control {
     const moved = v.copy(it.grip).sub(hold.hand).dot(this.axis) / this.length2
     this.value = clamp(hold.from + moved, 0, 1)
     this.options.set(this.value, false)
-    // A click through each detent
-    const { detents } = this.options
+    // A click through each detent or notch
+    const detents = this.options.detents ?? this.options.notches
     if (detents) {
       const nearest = detents.reduce(
         (best, d, i) =>
@@ -332,6 +374,8 @@ export class Lever extends Control {
 export class Stick extends Control {
   pitch = 0
   roll = 0
+  /** Where the control surfaces are, which the stick follows while no hand holds it. */
+  follow: (() => { pitch: number; roll: number }) | null = null
   private readonly grip: Mesh
   private readonly shaft: Mesh
   private readonly top: Vector3
@@ -398,10 +442,11 @@ export class Stick extends Control {
       this.pitch += (clamp(pitch / moving.length, -1, 1) - this.pitch) * k
       this.roll += (clamp(roll / moving.length, -1, 1) - this.roll) * k
     } else if (this.holders.size === 0) {
-      // Centring springs
+      // Let go, it moves with the control surfaces: back to centre, or as the autopilot flies
+      const target = this.follow?.() ?? { pitch: 0, roll: 0 }
       const k = Math.min(1, dt * 6)
-      this.pitch -= this.pitch * k
-      this.roll -= this.roll * k
+      this.pitch += (target.pitch - this.pitch) * k
+      this.roll += (target.roll - this.roll) * k
     }
     const top = this.grabPoint()
     this.grip.position.copy(top)
@@ -425,6 +470,8 @@ export class Stick extends Control {
  * to pitch. One hand or two; a hand gripping the hub twists it from the wrist.
  */
 export class Yoke extends Control {
+  /** Where the control surfaces are, which the yoke follows while no hand holds it. */
+  follow: (() => { pitch: number; roll: number }) | null = null
   angle = 0
   /** Metres, positive pulled toward the pilot. */
   pull = 0
@@ -578,9 +625,11 @@ export class Yoke extends Control {
       this.angle += (clamp(angle / n, -this.maxAngle, this.maxAngle) - this.angle) * k
       this.pull += (clamp(pull / n, -this.maxPull, this.maxPull) - this.pull) * k
     } else if (this.holders.size === 0) {
+      // Let go, it moves with the control surfaces: back to centre, or as the autopilot flies
+      const target = this.follow?.() ?? { pitch: 0, roll: 0 }
       const k = Math.min(1, dt * 3.5)
-      this.angle -= this.angle * k
-      this.pull -= this.pull * k
+      this.angle += (target.roll * this.maxAngle - this.angle) * k
+      this.pull += (target.pitch * this.maxPull - this.pull) * k
     }
     this.pitchGroup.position.set(this.hub.x, this.hub.y, this.hub.z + this.pull)
     this.rollGroup.rotation.z = -this.angle
@@ -591,13 +640,11 @@ export class Yoke extends Control {
   }
 }
 
-/** Turn of a hand about an axis, in radians: the panel's normal (z) or straight up (y). */
-function twist(quaternion: Quaternion, axis: 'z' | 'y') {
-  if (axis === 'z') {
-    const x = v.set(1, 0, 0).applyQuaternion(quaternion)
-    return Math.atan2(x.y, x.x)
-  }
-  // The hand's side axis stays level however far the fingers point down at a floor knob
+/**
+ * A hand's turn about straight up, in radians, for a knob on the floor. The hand's side
+ * axis stays level however far the fingers point down at it.
+ */
+function twist(quaternion: Quaternion) {
   const side = v.set(1, 0, 0).applyQuaternion(quaternion)
   return Math.atan2(-side.z, side.x)
 }
@@ -616,20 +663,22 @@ export class Rocker extends Control {
       set: (on: boolean) => void
       color?: number
       state?: () => string
+      face?: Quaternion
     }
   ) {
     super(group, buzz)
     this.pressable = true
     this.pressHalf = { x: 0.012, y: 0.018 }
-    this.pressAt.copy(at).setZ(at.z + 0.008)
+    const mount = this.mount(at, options.face)
+    this.pressAt.copy(this.outFrom(at, 0.008))
     const plate = new Mesh(new BoxGeometry(0.018, 0.03, 0.003), PLATE)
-    plate.position.copy(at).setZ(at.z + 0.0015)
+    plate.position.z = 0.0015
     this.rocker = new Mesh(
       new BoxGeometry(0.013, 0.024, 0.008),
       this.glowMaterial(options.color ?? 0x222426)
     )
-    this.rocker.position.copy(at).setZ(at.z + 0.005)
-    group.add(plate, this.rocker)
+    this.rocker.position.z = 0.005
+    mount.add(plate, this.rocker)
   }
 
   tooltip() {
@@ -672,22 +721,27 @@ export class Key extends Control {
     group: Group,
     buzz: Buzz,
     at: Vector3,
-    private readonly options: { get: () => KeyPosition; set: (position: KeyPosition) => void }
+    private readonly options: {
+      get: () => KeyPosition
+      set: (position: KeyPosition) => void
+      face?: Quaternion
+    }
   ) {
     super(group, buzz)
     this.grabbable = true
     this.pressable = true
     this.grabRadius = 0.04
     this.pressHalf = { x: 0.018, y: 0.018 }
-    this.pressAt.copy(at).setZ(at.z + 0.02)
+    const mount = this.mount(at, options.face)
+    this.pressAt.copy(this.outFrom(at, 0.02))
     const switchFace = new Mesh(
       new CylinderGeometry(0.02, 0.02, 0.006, 24).rotateX(Math.PI / 2),
       PLATE
     )
-    switchFace.position.copy(at).setZ(at.z + 0.003)
+    switchFace.position.z = 0.003
     this.head = new Mesh(new BoxGeometry(0.008, 0.03, 0.012), this.glowMaterial(0xb8b8b0))
-    this.head.position.copy(at).setZ(at.z + 0.014)
-    group.add(switchFace, this.head)
+    this.head.position.z = 0.014
+    mount.add(switchFace, this.head)
   }
 
   tooltip() {
@@ -700,7 +754,7 @@ export class Key extends Control {
   }
 
   onGrab(it: Interactor) {
-    this.twistFrom = twist(it.quaternion, 'z')
+    this.twistFrom = this.twistOnFace(it.quaternion)
     this.indexFrom = KEY_POSITIONS.indexOf(this.options.get())
     this.holders.set(it, true)
     this.buzz(it, 0.25, 15)
@@ -708,7 +762,7 @@ export class Key extends Control {
 
   onMove(it: Interactor) {
     // Turning clockwise, as a key turns, is a negative twist seen from the pilot
-    const turned = -wrap(twist(it.quaternion, 'z') - this.twistFrom)
+    const turned = -wrap(this.twistOnFace(it.quaternion) - this.twistFrom)
     const index = clamp(this.indexFrom + Math.round(turned / KEY_STEP), 0, KEY_POSITIONS.length - 1)
     const position = KEY_POSITIONS[index]
     if (position !== this.options.get()) {
@@ -754,6 +808,7 @@ export class Key extends Control {
  */
 export class Knob extends Control {
   private readonly cap: Mesh
+  private readonly point = new Vector3()
   private twistFrom = 0
   private clicked = 0
   private spun = 0
@@ -774,6 +829,8 @@ export class Knob extends Control {
       /** A pointer on the knob that shows a position, in radians; otherwise it spins freely. */
       pointer?: () => number
       state?: () => string
+      /** For a panel knob (axis z), the panel's facing when it does not face the pilot. */
+      face?: Quaternion
     }
   ) {
     super(group, buzz)
@@ -782,15 +839,17 @@ export class Knob extends Control {
     const radius = options.radius ?? 0.011
     this.grabRadius = Math.max(0.035, radius * 2.5)
     this.pressHalf = { x: radius * 1.3, y: radius * 1.3 }
-    this.pressAt.copy(at)
+    // A panel knob stands out along the panel's facing; a floor knob stands up
+    const mount = this.mount(at, options.axis === 'z' ? options.face : undefined)
+    this.pressAt.copy(options.axis === 'z' ? this.outFrom(at, 0.007) : at)
+    this.point.copy(options.axis === 'z' ? this.pressAt : v.copy(at).setY(at.y + 0.01))
     const geometry =
       options.axis === 'z'
         ? new CylinderGeometry(radius, radius, 0.014, 18).rotateX(Math.PI / 2)
         : new CylinderGeometry(radius, radius * 1.2, 0.02, 18)
     this.cap = new Mesh(geometry, this.glowMaterial(options.color ?? 0x1a1a1a))
-    this.cap.position.copy(at)
-    if (options.axis === 'z') this.cap.position.z += 0.007
-    else this.cap.position.y += 0.01
+    if (options.axis === 'z') this.cap.position.z = 0.007
+    else this.cap.position.y = 0.01
     // A white index line on the knob's face
     const index = new Mesh(
       new BoxGeometry(0.002, radius * 0.9, 0.001),
@@ -803,7 +862,7 @@ export class Knob extends Control {
       index.scale.set(3, 1.8, 1)
     }
     this.cap.add(index)
-    group.add(this.cap)
+    mount.add(this.cap)
   }
 
   tooltip() {
@@ -812,11 +871,21 @@ export class Knob extends Control {
   }
 
   grabPoint() {
-    return this.cap.position
+    return this.point
+  }
+
+  /** Turns about the panel's facing, or straight up for a knob on the floor. */
+  get floor() {
+    return this.options.axis === 'y'
+  }
+
+  /** A hand's turn about the knob's axis. */
+  private turnOf(quaternion: Quaternion) {
+    return this.options.axis === 'z' ? this.twistOnFace(quaternion) : twist(quaternion)
   }
 
   onGrab(it: Interactor) {
-    this.twistFrom = twist(it.quaternion, this.options.axis)
+    this.twistFrom = this.turnOf(it.quaternion)
     this.clicked = 0
     this.holders.set(it, true)
     this.buzz(it, 0.25, 15)
@@ -824,7 +893,7 @@ export class Knob extends Control {
 
   onMove(it: Interactor) {
     // Clockwise, seen from the pilot or from above, turns up
-    const turned = -wrap(twist(it.quaternion, this.options.axis) - this.twistFrom)
+    const turned = -wrap(this.turnOf(it.quaternion) - this.twistFrom)
     const clicks = Math.trunc(turned / this.options.step)
     if (clicks !== this.clicked) {
       this.options.turn(clicks - this.clicked)
@@ -835,7 +904,7 @@ export class Knob extends Control {
   }
 
   rebase(it: Interactor) {
-    this.twistFrom = twist(it.quaternion, this.options.axis)
+    this.twistFrom = this.turnOf(it.quaternion)
     this.clicked = 0
   }
 
@@ -1127,13 +1196,10 @@ export class ControlSet {
         let d = Number.POSITIVE_INFINITY
         if (control.grabbable) d = control.grabDistance(it.grip) / control.grabRadius
         if (control.pressable && control.pressZone(it.tip, 'out') !== 'out') {
-          const c = control.pressAt
+          const along = control.local(it.tip, offset)
           d = Math.min(
             d,
-            Math.hypot(
-              (it.tip.x - c.x) / control.pressHalf.x,
-              (it.tip.y - c.y) / control.pressHalf.y
-            ) * 0.5
+            Math.hypot(along.x / control.pressHalf.x, along.y / control.pressHalf.y) * 0.5
           )
         }
         if (d < nearest) {

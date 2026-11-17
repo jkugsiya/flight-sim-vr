@@ -40,7 +40,8 @@ import { Wreck } from './wreck'
 
 /** `finished` means a mission ended with a pass or a fail, other than a crash. */
 export type Status = 'menu' | 'flying' | 'paused' | 'crashed' | 'arrived' | 'finished'
-export type CameraMode = 'chase' | 'cockpit'
+/** Chase from behind, the classic cockpit view, or the pilot's seat exactly as in VR. */
+export type CameraMode = 'chase' | 'cockpit' | 'seat'
 export type WindLevel = 'calm' | 'light' | 'strong'
 export type MapSize = 'small' | 'large' | 'hidden'
 /**
@@ -489,7 +490,15 @@ class Game {
     this.setState({ bombsight: !open })
   }
 
-  toggleCamera = () => this.change({ camera: this.state.camera === 'chase' ? 'cockpit' : 'chase' })
+  toggleCamera = () => {
+    const next = { chase: 'cockpit', cockpit: 'seat', seat: 'chase' } as const
+    this.change({ camera: next[this.state.camera] })
+  }
+
+  /** True when the view is from the VR seat: in the headset, or its preview on the page. */
+  get seated() {
+    return this.state.vr || this.state.camera === 'seat'
+  }
 
   /**
    * Switches to the headset: the pilot's seat, and graphics light enough to hold the
