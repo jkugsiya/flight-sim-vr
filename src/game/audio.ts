@@ -3,6 +3,10 @@ import type { FlightSim } from '../sim/flight-sim'
 /** What the player should hear: the aircraft in flight, only the crash, or nothing. */
 export type SoundMode = 'flying' | 'crashed' | 'silent'
 
+// The piston firing cycle is recorded for this rpm: one cycle is two revolutions
+const CYCLE_RPM = 1200
+const CYCLE_SECONDS = 2 / (CYCLE_RPM / 60)
+
 /** Synthesised engine, wind, stall horn, tyre chirp, and crash sounds. */
 export class Sound {
   private context: AudioContext | null = null
@@ -14,6 +18,14 @@ export class Sound {
   private engineGain: GainNode | null = null
   private windGain: GainNode | null = null
   private hornGain: GainNode | null = null
+  /** A piston engine: a looped firing cycle, sped up and slowed with the rpm. */
+  private piston: AudioBufferSourceNode | null = null
+  private pistonFilter: BiquadFilterNode | null = null
+  private pistonGain: GainNode | null = null
+  /** The propeller's whup: rushing noise pulsed as each blade passes. */
+  private propGain: GainNode | null = null
+  private bladeBeat: OscillatorNode | null = null
+  private bladeDepth: GainNode | null = null
 
   /** Creates the audio graph. Browsers only allow this after a click or key press. */
   start() {
@@ -56,6 +68,53 @@ export class Sound {
     wind.connect(windFilter).connect(windGain).connect(master)
     wind.start()
 
+    // One four-stroke cycle of a four-cylinder engine at the reference rpm: four exhaust
+    // pops, each a little different, as no two cylinders fire quite alike
+    const cycle = context.createBuffer(
+      1,
+      Math.round(context.sampleRate * CYCLE_SECONDS),
+      context.sampleRate
+    )
+    const wave = cycle.getChannelData(0)
+    const spacing = CYCLE_SECONDS / 4
+    for (let cylinder = 0; cylinder < 4; cylinder++) {
+      const start = cylinder * spacing + (Math.random() - 0.5) * spacing * 0.08
+      const strength = 0.8 + Math.random() * 0.25
+      for (let i = 0; i < wave.length; i++) {
+        let t = i / context.sampleRate - start
+        if (t < 0) t += CYCLE_SECONDS
+        const pop = Math.exp(-t / 0.005) * (Math.random() * 2 - 1) * 0.7
+        const thump = Math.exp(-t / 0.014) * Math.sin(2 * Math.PI * 70 * t)
+        wave[i] += (pop + thump) * strength * 0.45
+      }
+    }
+    const piston = context.createBufferSource()
+    piston.buffer = cycle
+    piston.loop = true
+    const pistonFilter = context.createBiquadFilter()
+    pistonFilter.type = 'lowpass'
+    const pistonGain = context.createGain()
+    pistonGain.gain.value = 0
+    piston.connect(pistonFilter).connect(pistonGain).connect(master)
+    piston.start()
+
+    const prop = context.createBufferSource()
+    prop.buffer = noise
+    prop.loop = true
+    const propFilter = context.createBiquadFilter()
+    propFilter.type = 'bandpass'
+    propFilter.frequency.value = 650
+    propFilter.Q.value = 0.7
+    const propGain = context.createGain()
+    propGain.gain.value = 0
+    const bladeBeat = context.createOscillator()
+    const bladeDepth = context.createGain()
+    bladeDepth.gain.value = 0
+    bladeBeat.connect(bladeDepth).connect(propGain.gain)
+    prop.connect(propFilter).connect(propGain).connect(master)
+    prop.start(0, 0.7)
+    bladeBeat.start()
+
     const horn = context.createOscillator()
     horn.type = 'square'
     horn.frequency.value = 540
@@ -73,7 +132,13 @@ export class Sound {
       engineFilter,
       engineGain,
       windGain,
-      hornGain
+      hornGain,
+      piston,
+      pistonFilter,
+      pistonGain,
+      propGain,
+      bladeBeat,
+      bladeDepth
     })
   }
 
@@ -97,14 +162,23 @@ export class Sound {
       engineSub.frequency.setTargetAtTime(45 + rpm * 0.5, now, 0.1)
       engineFilter.frequency.setTargetAtTime(4000, now, 0.05)
       engineGain?.gain.setTargetAtTime(turning ? 0.012 + 0.02 * sim.enginePower : 0, now, 0.1)
+      this.pistonGain?.gain.setTargetAtTime(0, now, 0.1)
+      this.propGain?.gain.setTargetAtTime(0, now, 0.1)
+      this.bladeDepth?.gain.setTargetAtTime(0, now, 0.1)
     } else {
-      // A four-cylinder engine fires twice per revolution
-      const firing = Math.max(rpm / 30, 1)
-      engine.type = 'sawtooth'
-      engine.frequency.setTargetAtTime(firing, now, 0.05)
-      engineSub.frequency.setTargetAtTime(firing / 2, now, 0.05)
-      engineFilter.frequency.setTargetAtTime(180 + rpm * 0.3, now, 0.05)
-      engineGain?.gain.setTargetAtTime(turning ? 0.04 + 0.1 * sim.enginePower : 0, now, 0.1)
+      // The firing cycle plays faster as the engine speeds up: chuffs on the starter, a
+      // steady rumble at idle, a hard drone at full power. Cabin walls take off the top.
+      engineGain?.gain.setTargetAtTime(0, now, 0.1)
+      const power = sim.enginePower
+      this.piston?.playbackRate.setTargetAtTime(Math.max(rpm, 30) / CYCLE_RPM, now, 0.05)
+      this.pistonFilter?.frequency.setTargetAtTime(500 + rpm * 0.9, now, 0.05)
+      this.pistonGain?.gain.setTargetAtTime(turning ? 0.22 + 0.3 * power : 0, now, 0.08)
+      // A two-blade propeller passes twice per revolution
+      const blades = Math.max(rpm / 30, 1)
+      const whup = turning ? 0.015 + 0.07 * power * Math.min(1, rpm / 2000) : 0
+      this.bladeBeat?.frequency.setTargetAtTime(blades, now, 0.05)
+      this.propGain?.gain.setTargetAtTime(whup, now, 0.1)
+      this.bladeDepth?.gain.setTargetAtTime(whup * 0.8, now, 0.1)
     }
     // Rushing air, plus the roar of the exhaust on a jet
     const air = Math.min(0.25, (sim.indicatedAirspeed / 70) ** 2 * 0.15)
@@ -124,6 +198,11 @@ export class Sound {
     utterance.rate = 1.15
     utterance.pitch = 0.85
     speechSynthesis.speak(utterance)
+  }
+
+  /** A cockpit switch, knob detent, or lever notch: a short mechanical click. */
+  click(strength: number) {
+    this.burst('highpass', 3500, 1800, 0.25 * strength, 0.03)
   }
 
   /** Short squeal of a tyre touching the runway. */

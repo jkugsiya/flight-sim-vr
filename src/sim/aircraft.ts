@@ -36,6 +36,11 @@ export type PistonEngine = {
   idleRpm: number
   maxRpm: number
   /**
+   * Flat-plate area in m² of drag from a propeller windmilling at idle or stopped. It fades
+   * out by 30% power, where the propeller pulls. Without it, an idling engine still pushes.
+   */
+  windmillArea?: number
+  /**
    * Height in metres up to which a supercharger keeps full power. Above it power falls with
    * the air. Without one, power falls from sea level.
    */
@@ -405,7 +410,7 @@ const CESSNA: AircraftSpec = {
   cd0: 0.033,
   gearDrag: 0,
   flapDrag: 0.05,
-  inducedDrag: 0.0533,
+  inducedDrag: 0.049,
   sideDrag: 0.6,
   sideForce: -0.5,
   waveDrag: 0,
@@ -434,13 +439,14 @@ const CESSNA: AircraftSpec = {
   engine: {
     type: 'piston',
     shaftPower: 134_000,
-    propEfficiency: 0.8,
-    staticThrustSpeed: 35,
+    propEfficiency: 0.85,
+    staticThrustSpeed: 33,
     idlePower: 0.05,
     propYawArm: 0.04,
     propYawFadeSpeed: 50,
     idleRpm: 600,
-    maxRpm: 2700
+    maxRpm: 2700,
+    windmillArea: 0.66
   },
   engineCount: 1,
   spoolSeconds: 0.4,
@@ -466,7 +472,7 @@ const CESSNA: AircraftSpec = {
   neverExceedSpeed: 163 * KNOT,
   maxTouchdownSink: 5,
   gearTravel: 0.45,
-  brakeFriction: 0.6,
+  brakeFriction: 0.3,
   sideFriction: 0.8,
   maxSteerAngle: 0.45,
 

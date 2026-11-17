@@ -2,7 +2,14 @@ import { describe, expect, test } from 'bun:test'
 import { Vector3 } from 'three'
 import { Pilot } from '../game/pilot'
 import { type AircraftSpec, HANGAR, isGlider, KNOT } from './aircraft'
-import { type Controls, FlightSim, type Ground } from './flight-sim'
+import {
+  bestMixture,
+  type Controls,
+  FlightSim,
+  type Ground,
+  type Procedures,
+  procedureState
+} from './flight-sim'
 
 const STEP = 1 / 120
 const CALM = new Vector3()
@@ -502,5 +509,176 @@ describe('Space Shuttle orbiter', () => {
     expect(sink).toBeLessThan(2.5)
     expect(sim.groundSpeed).toBeLessThan(1)
     expect(z - sim.position.z).toBeLessThan(3000)
+  })
+})
+
+describe('a Cessna flown by its real procedures', () => {
+  /** A cold Cessna on the ramp with the master on, and its own engine controls. */
+  function cold() {
+    const sim = new FlightSim(FLAT, CESSNA)
+    sim.placeOnGround(0, 0, 0)
+    const procedures: Procedures = { ...procedureState(false), mixture: 1 }
+    const c = controls({ fuelPumps: false, procedures })
+    return { sim, c, procedures }
+  }
+  const crank = (sim: FlightSim, c: Controls, procedures: Procedures, seconds: number) => {
+    procedures.magnetos = 'start'
+    run(sim, c, seconds)
+    procedures.magnetos = 'both'
+  }
+
+  test('a cold engine starts by the handbook: prime, crank at idle cutoff, mixture in', () => {
+    const { sim, c, procedures } = cold()
+    crank(sim, c, procedures, 4)
+    expect(sim.enginesRunning).toBe(0)
+    procedures.auxPump = true
+    run(sim, c, 4)
+    procedures.auxPump = false
+    procedures.mixture = 0
+    c.throttle = 0.1
+    crank(sim, c, procedures, 2.5)
+    // Fired on its prime: the mixture must come in now, as smoothly as a hand pushes it
+    expect(sim.enginesRunning).toBe(1)
+    run(sim, c, 1.5, time => {
+      procedures.mixture = Math.min(1, time / 1.5)
+    })
+    procedures.mixture = 1
+    run(sim, c, 5)
+    expect(sim.enginesRunning).toBe(1)
+  })
+
+  test('an engine fired on its prime dies if the mixture stays at cutoff', () => {
+    const { sim, c, procedures } = cold()
+    procedures.auxPump = true
+    run(sim, c, 4)
+    procedures.auxPump = false
+    procedures.mixture = 0
+    crank(sim, c, procedures, 2.5)
+    run(sim, c, 5)
+    expect(sim.enginesRunning).toBe(0)
+  })
+
+  test('idle cutoff, the magnetos, and the fuel selector each stop the engine', () => {
+    const stops = (cut: (procedures: Procedures) => void, seconds: number) => {
+      const sim = new FlightSim(FLAT, CESSNA)
+      sim.placeOnGround(0, 0, 0)
+      sim.startAllEngines()
+      const procedures = procedureState(true)
+      const c = controls({ procedures })
+      run(sim, c, 1)
+      cut(procedures)
+      run(sim, c, seconds)
+      return sim.enginesRunning === 0
+    }
+    expect(stops(p => (p.mixture = 0), 1)).toBe(true)
+    expect(stops(p => (p.magnetos = 'off'), 1)).toBe(true)
+    // The lines hold enough fuel for a while after the selector closes
+    expect(stops(p => (p.fuelSelector = 'off'), 5)).toBe(false)
+    expect(stops(p => (p.fuelSelector = 'off'), 25)).toBe(true)
+  })
+
+  test('an over-primed engine floods, and cranking at idle cutoff clears it', () => {
+    const { sim, c, procedures } = cold()
+    procedures.auxPump = true
+    run(sim, c, 10)
+    procedures.auxPump = false
+    expect(sim.flooded).toBe(true)
+    crank(sim, c, procedures, 4)
+    expect(sim.enginesRunning).toBe(0)
+    // The flooded start: throttle wide open, mixture at cutoff, crank
+    procedures.mixture = 0
+    c.throttle = 1
+    crank(sim, c, procedures, 4)
+    c.throttle = 0.1
+    procedures.mixture = 1
+    crank(sim, c, procedures, 3)
+    expect(sim.enginesRunning).toBe(1)
+  })
+
+  test('leaning at 8,000 ft gives more power than full rich', () => {
+    const power = (mixture: number) => {
+      const sim = flying(CESSNA, 2440)
+      const c = controls({ throttle: 1, procedures: { ...procedureState(true), mixture } })
+      run(sim, c, 4)
+      return sim.engines[0].power
+    }
+    expect(power(bestMixture(2440))).toBeGreaterThan(power(1) * 1.04)
+    // Leaned far past the best setting, the engine falters
+    expect(power(bestMixture(2440) - 0.3)).toBeLessThan(power(1) * 0.6)
+  })
+})
+
+describe('the Cessna matches the 172S handbook at full weight, sea level', () => {
+  const FT = 0.3048
+  /** A Cessna in the air with full tanks, near its 1,157 kg maximum weight. */
+  function full(altitude: number, knots: number) {
+    const sim = new FlightSim(FLAT, CESSNA)
+    sim.placeInAir(0, altitude, 0, 0, knots * KNOT)
+    sim.fuel = CESSNA.fuelCapacity
+    return sim
+  }
+  /** Holds an indicated airspeed with the elevator, wings level. */
+  const holdSpeed = (sim: FlightSim, c: Controls, knots: number) => {
+    const pitch = clamp((sim.indicatedAirspeed / KNOT - knots) * 0.012) * 0.35
+    holdAttitude(sim, c, pitch)
+  }
+
+  test('stalls at 53 kt clean and 48 kt with full flaps', () => {
+    const stallAt = (flapNotch: number) => {
+      const sim = full(1500, 70)
+      const c = controls({ flapNotch })
+      let stall = 0
+      run(sim, c, 90, () => {
+        if (stall > 0) return
+        holdAltitude(sim, c, 1500, 0.4)
+        if (sim.stall > 0.5) stall = sim.indicatedAirspeed / KNOT
+      })
+      return stall
+    }
+    expect(stallAt(0)).toBeWithin(50, 56)
+    expect(stallAt(3)).toBeWithin(45, 51)
+  })
+
+  test('climbs 730 ft/min at 74 kt and glides about 9 to 1 at 68 kt', () => {
+    const climb = full(150, 74)
+    const c = controls({ throttle: 1 })
+    run(climb, c, 40, () => holdSpeed(climb, c, 74))
+    const start = climb.position.y
+    run(climb, c, 60, () => holdSpeed(climb, c, 74))
+    expect((climb.position.y - start) / FT).toBeWithin(660, 800)
+
+    const glide = full(1500, 68)
+    const idle = controls()
+    run(glide, idle, 30, () => holdSpeed(glide, idle, 68))
+    const from = glide.position.clone()
+    run(glide, idle, 60, () => holdSpeed(glide, idle, 68))
+    const along = Math.hypot(glide.position.x - from.x, glide.position.z - from.z)
+    expect(along / (from.y - glide.position.y)).toBeWithin(8, 10)
+  })
+
+  test('cruises at 124 kt true at 8,000 ft, where full throttle gives 75% power', () => {
+    const sim = full(8000 * FT, 110)
+    const c = controls({ throttle: 1 })
+    run(sim, c, 240, () => holdAltitude(sim, c, 8000 * FT))
+    expect(sim.trueAirspeed / KNOT).toBeWithin(118, 130)
+  })
+
+  test('takes off in about 960 ft and stops from touchdown in about 575 ft', () => {
+    const takeoff = parked(CESSNA)
+    takeoff.fuel = CESSNA.fuelCapacity
+    const c = controls({ throttle: 1, flapNotch: 1 })
+    let roll = 0
+    run(takeoff, c, 60, () => {
+      if (roll > 0) return
+      if (takeoff.indicatedAirspeed / KNOT > 51) holdAttitude(takeoff, c, 0.14)
+      if (!takeoff.onGround) roll = -takeoff.position.z
+    })
+    expect(roll / FT).toBeWithin(800, 1100)
+
+    const landing = parked(CESSNA)
+    landing.fuel = CESSNA.fuelCapacity
+    landing.velocity.set(0, 0, -50 * KNOT)
+    run(landing, controls({ brake: 1, flapNotch: 3 }), 40)
+    expect(-landing.position.z / FT).toBeWithin(500, 650)
   })
 })

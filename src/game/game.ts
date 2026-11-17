@@ -140,6 +140,8 @@ class Game {
   sceneryTime = 0
   /** Rendered frames per second, smoothed. */
   frameRate = 60
+  /** Counts the flights started, so cockpit systems can tell when a new one begins. */
+  flight = 0
   readonly effects = new Effects()
   readonly wreck = new Wreck()
   readonly traffic = new Traffic()
@@ -406,6 +408,11 @@ class Game {
     const liftOff = fromStrip(runway, runway.length / 2, 0)
     const heading = (runway.heading * Math.PI) / 180
     this.nav.load(planRoute({ ...liftOff, heading }, destination, selected, WIND_FROM), this.sim)
+  }
+
+  /** A mechanical click from a cockpit switch or notch, `strength` from 0 to 1. */
+  click = (strength: number) => {
+    if (!this.state.muted) this.sound.click(strength)
   }
 
   /** Creates the sound engine. Browsers allow this only during a click, such as Enter VR. */
@@ -814,6 +821,7 @@ class Game {
   }
 
   private fly() {
+    this.flight++
     // Bombers carry a load in free flight too. A mission loads its own after this.
     this.bombs.load(this.sim.spec.bombBay ?? 0, [])
     this.rippleHeld = false

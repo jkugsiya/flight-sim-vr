@@ -59,6 +59,31 @@ type Slot = {
   source: XRInputSource | null
   interactor: Interactor
   controllerModel: Group
+  tipFilter: OneEuro
+  gripFilter: OneEuro
+}
+
+/**
+ * The One Euro filter for a moving point: heavy smoothing while the point is nearly still,
+ * which hides tracking jitter, and light smoothing while it moves fast, which avoids lag.
+ */
+class OneEuro {
+  private readonly value = new Vector3()
+  private readonly speed = new Vector3()
+  private readonly step = new Vector3()
+
+  reset(point: Vector3) {
+    this.value.copy(point)
+    this.speed.set(0, 0, 0)
+  }
+
+  filter(point: Vector3, dt: number, tuning: { minCutoff: number; beta: number }) {
+    const alpha = (cutoff: number) => 1 / (1 + 1 / (2 * Math.PI * cutoff * Math.max(dt, 1e-3)))
+    this.step.copy(point).sub(this.value).divideScalar(Math.max(dt, 1e-3))
+    this.speed.lerp(this.step, alpha(1))
+    const cutoff = tuning.minCutoff + tuning.beta * this.speed.length()
+    return this.value.lerp(point, alpha(cutoff))
+  }
 }
 
 const JOINTS = {
@@ -74,13 +99,19 @@ const JOINTS = {
 // Fingertip-to-thumb distances in metres that start and end a pinch
 const PINCH_ON = 0.02
 const PINCH_OFF = 0.034
-// Fingertip-to-wrist over palm length: below FIST_ON the fingers are curled into a fist
-const FIST_ON = 1.25
-const FIST_OFF = 1.4
-const INDEX_CURLED = 1.4
-const INDEX_STRAIGHT = 1.55
-// Seconds a hand may drop out of tracking before it counts as gone
+// Middle and ring fingertip-to-wrist over palm length: below GRIP_ON the hand wraps a
+// control, above GRIP_OFF it has let go. The index finger may rest on a trigger, so a grip
+// ignores it, except that a fully straight index means pointing, not grabbing.
+const GRIP_ON = 1.3
+const GRIP_OFF = 1.5
+const INDEX_STRAIGHT = 1.65
+// Seconds a hand may drop out of tracking before it counts as gone. A hand holding a
+// control keeps its hold longer, as tracking often blinks when fingers hide behind a grip.
 const LOST_SECONDS = 0.35
+const LOST_HOLDING_SECONDS = 1.2
+// Adaptive smoothing: steady at rest, quick when moving. Hands jitter more than controllers.
+const HAND_FILTER = { minCutoff: 1.2, beta: 4 }
+const CONTROLLER_FILTER = { minCutoff: 4, beta: 1 }
 // Grip button values that start and end a grab, with a gap so a half squeeze does not chatter
 const SQUEEZE_ON = 0.6
 const SQUEEZE_OFF = 0.35
@@ -168,7 +199,9 @@ export class XRInput {
         grip,
         source: null,
         interactor: interactor(),
-        controllerModel: model
+        controllerModel: model,
+        tipFilter: new OneEuro(),
+        gripFilter: new OneEuro()
       }
       controller.addEventListener('connected', event => {
         const source = event.data
@@ -198,7 +231,6 @@ export class XRInput {
   }
 
   update(dt: number) {
-    // Light smoothing takes out tracking jitter without a noticeable lag
     const k = 1 - Math.exp(-dt * 28)
     for (const slot of this.slots) {
       const it = slot.interactor
@@ -210,15 +242,18 @@ export class XRInput {
       }
       const read = source.hand ? this.readHand(slot, dt) : this.readController(slot)
       if (!read) continue
+      const filter = it.kind === 'hand' ? HAND_FILTER : CONTROLLER_FILTER
       if (!it.seen || !it.active) {
         it.tip.copy(read.tip)
         it.grip.copy(read.grip)
+        slot.tipFilter.reset(read.tip)
+        slot.gripFilter.reset(read.grip)
         it.previousTip.copy(read.tip)
         it.tipVelocity.set(0, 0, 0)
         it.seen = true
       } else {
-        it.tip.lerp(read.tip, k)
-        it.grip.lerp(read.grip, read.grabbing ? Math.min(1, k * 1.6) : k)
+        it.tip.copy(slot.tipFilter.filter(read.tip, dt, filter))
+        it.grip.copy(slot.gripFilter.filter(read.grip, dt, filter))
       }
       it.quaternion.slerp(read.quaternion, it.active ? k : 1)
       v.copy(it.tip).sub(it.previousTip).divideScalar(Math.max(dt, 1e-3))
@@ -247,7 +282,8 @@ export class XRInput {
     const middleBase = j[JOINTS.middleBase]
     if (!wrist || !indexTip || !thumbTip || !middleTip || !middleBase || !indexTip.visible) {
       it.lost += dt
-      if (it.lost > LOST_SECONDS) {
+      // The hand keeps its last place meanwhile, so a held control stays put
+      if (it.lost > (it.grabbing ? LOST_HOLDING_SECONDS : LOST_SECONDS)) {
         it.active = false
         it.grabbing = false
       }
@@ -264,18 +300,18 @@ export class XRInput {
     const ringCurl = ringTip ? ringTip.position.distanceTo(wrist.position) / palm : middleCurl
     const curl = (middleCurl + ringCurl) / 2
     const indexCurl = indexTip.position.distanceTo(wrist.position) / palm
-    it.pointing = curl < 1.35 && indexCurl > INDEX_STRAIGHT
+    it.pointing = curl < GRIP_OFF && indexCurl > INDEX_STRAIGHT
     let fist = it.fist
-    if (!fist && curl < FIST_ON && indexCurl < INDEX_CURLED) fist = true
-    else if (fist && (curl > FIST_OFF || indexCurl > INDEX_STRAIGHT)) fist = false
+    if (!fist && curl < GRIP_ON && indexCurl < INDEX_STRAIGHT) fist = true
+    else if (fist && curl > GRIP_OFF) fist = false
     it.fist = fist
     const grabbing = it.pinching || fist
     // Letting go starts the moment the fingers begin to open
-    const closed = Math.max(curl, indexCurl * 0.9)
+    const closed = curl
     if (grabbing && it.grabbing) {
       it.minCurl = Math.min(it.minCurl, closed)
       it.minPinch = Math.min(it.minPinch, pinch)
-      const fistOpening = fist && closed > it.minCurl + 0.1
+      const fistOpening = fist && closed > it.minCurl + 0.12
       const pinchOpening = it.pinching && !fist && pinch > it.minPinch + 0.009
       it.opening = fistOpening || pinchOpening
     } else {

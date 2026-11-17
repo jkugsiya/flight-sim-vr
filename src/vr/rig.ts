@@ -1,7 +1,9 @@
 import { type Camera, Group, type PerspectiveCamera, Vector3, type WebGLRenderer } from 'three'
 import { game } from '../game/game'
 import { heightAt } from '../world/island'
-import { Cockpit } from './cockpit'
+import { CessnaCockpit } from './cessna'
+import { Cockpit, type CockpitView } from './cockpit'
+import type { Buzz } from './controls'
 import { Feel, pulse } from './feel'
 import { Gamepads } from './gamepad'
 import { XRInput } from './input'
@@ -29,7 +31,7 @@ export class Rig {
   private readonly tablet: Tablet
   private readonly feel = new Feel()
   private readonly gamepads = new Gamepads()
-  private cockpit: Cockpit | null = null
+  private cockpit: CockpitView | null = null
   private camera: PerspectiveCamera | null = null
   private recenterIn = 0
   private crashView = false
@@ -118,8 +120,12 @@ export class Rig {
     const { sim } = game
     if (this.cockpit?.spec !== sim.spec) {
       this.cockpit?.dispose()
-      this.cockpit = new Cockpit(sim.spec, pulse)
+      // The Cessna has its own cockpit, true to the real one; the others share a generic one
+      this.cockpit =
+        sim.spec.id === 'c172' ? new CessnaCockpit(sim.spec, feel) : new Cockpit(sim.spec, feel)
       this.seat.add(this.cockpit.group)
+      this.tablet.place(this.cockpit.tablet.position, this.cockpit.tablet.rotation)
+      this.tablet.setChecklists(this.cockpit.checklists)
     }
     const cockpit = this.cockpit
     this.placeSeat()
@@ -168,6 +174,15 @@ export class Rig {
     this.seat.position.copy(sim.spec.camera.eye).applyQuaternion(sim.orientation).add(sim.position)
     this.seat.quaternion.copy(sim.orientation)
   }
+}
+
+/**
+ * What touching a control feels and sounds like: a controller vibrates, and switches,
+ * notches, and presses click. Merely grabbing something is silent.
+ */
+const feel: Buzz = (it, strength, ms) => {
+  pulse(it, strength, ms)
+  if (strength >= 0.3) game.click(strength)
 }
 
 /** Clears the hands' hold on the controls. In VR there are no pedals, so the stick steers. */

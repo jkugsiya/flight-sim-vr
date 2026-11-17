@@ -30,9 +30,33 @@ Run `bun run certs` again if your Mac's network address changes.
 
 For bare-hand flying, turn on hand tracking first: **Settings**, then **Movement Tracking**, then **Hand Tracking**. Put the controllers down and the game switches to your hands.
 
-## The Cockpit
+## The Cessna 172 Cockpit
 
-Every aircraft gets the same layout, with the flight control its real pilot uses:
+The Cessna has a full-size copy of the 172S cockpit, flown by its real procedures.
+
+- **Panel:** the six steam gauges with moving needles, the engine cluster, the tachometer, a course needle with glideslope, and a magnetic compass on the windscreen frame.
+- **Avionics:** the warning lights, GPS, radio, and KAP 140 autopilot, which go dark with the avionics master off.
+- **Engine controls:** the key (OFF, R, L, BOTH, START), the red split master switch, the fuel pump, the push-pull throttle, and the red mixture knob.
+- **Pedestal and floor:** the trim wheel, the red fuel shutoff valve, and the fuel selector.
+- **Brakes:** pull the parking brake handle under the panel partway to brake, or all the way to lock it.
+
+The engine starts the way the handbook says:
+
+1. Set the master switch BAT on, and open the throttle about a quarter inch.
+2. Set the mixture to idle cutoff.
+3. Prime with the fuel pump and the mixture rich for 3 to 5 seconds, then go back to idle cutoff.
+4. Turn the key to START.
+5. When the engine fires, push the mixture to rich within about 3 seconds.
+
+Over-priming floods the engine. Clear a flood by cranking with the throttle full and the mixture at idle cutoff.
+
+The kneeboard on your left thigh carries the 172S checklists. Each item ticks itself off as you do it. The heading indicator starts unset on a cold start, so set it to the compass with its left knob.
+
+The Cessna flies to its handbook numbers at full weight: stalls at 53 kt clean and 48 kt with full flaps, climbs 730 ft/min, cruises at 124 kt at 8,000 ft, glides 9 to 1, takes off in about 960 ft, and stops in about 575 ft.
+
+## The Other Cockpits
+
+Every other aircraft gets the same layout, with the flight control its real pilot uses:
 
 - **Yoke:** Cessna 172, Boeing 737 and 787, and Concorde.
 - **Left sidestick:** Airbus A320 and A380.
@@ -49,13 +73,17 @@ The tablet on the left wall replaces the page's menus. Use it to set up a free f
 
 | Action | How |
 | --- | --- |
-| Grab | Pinch, or close your hand into a fist, on the stick, yoke, or a lever |
+| Grab | Pinch, or wrap your middle and ring fingers round the stick, yoke, or a lever. Your index finger can rest free |
+| Turn a knob or the key | Pinch it and twist your wrist |
+| Roll the trim wheel | Grab its rim and roll it: top forward is nose down |
 | Fly | Grab the stick and tilt it, or grab the yoke and turn and push or pull it |
 | Press a button | Poke it with your fingertip, or pinch it |
 | Tap the tablet | Touch the screen with your fingertip |
 | Steer on the ground | Move the stick or yoke left and right |
 | Brake | Pull the red brake handle toward you; it springs back when you let go |
 | Let go | Open your hand. The control freezes as your fingers open, so it stays where you left it |
+
+A held control keeps its hold through about a second of lost tracking, so a hand hidden behind the yoke does not drop it. A small dead zone at centre hides hand tremor, and small moves give fine control.
 
 The stick and yoke spring back to centre when you let go. A firm push or pull switches off the autopilot, as in a real cockpit. Grabbing the throttle switches off the autothrottle.
 

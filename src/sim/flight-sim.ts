@@ -48,7 +48,49 @@ export type Controls = {
   fuelDump: boolean
   /** Master switch for each engine, numbered from the left wingtip. */
   engineSwitches: boolean[]
+  /**
+   * A piston engine's real controls. Without them the engine starts from its switch alone,
+   * as on the desktop; with them it needs fuel, a rich mixture, the magnetos, the starter,
+   * and a prime when cold.
+   */
+  procedures?: Procedures
 }
+
+export type Magnetos = 'off' | 'right' | 'left' | 'both' | 'start'
+
+/** Piston engine and electrical controls, for aircraft flown by their real procedures. */
+export type Procedures = {
+  /** 0 is idle cutoff, 1 full rich. */
+  mixture: number
+  /** The ignition key. START turns the starter while held. */
+  magnetos: Magnetos
+  fuelSelector: 'off' | 'left' | 'both' | 'right'
+  /** The auxiliary fuel pump, which primes the engine before a cold start. */
+  auxPump: boolean
+  alternator: boolean
+  avionics: boolean
+}
+
+/** Controls for an aircraft shut down cold, or ready to fly with the engine running. */
+export function procedureState(running: boolean): Procedures {
+  return {
+    mixture: running ? 1 : 0,
+    magnetos: running ? 'both' : 'off',
+    fuelSelector: 'both',
+    auxPump: false,
+    alternator: running,
+    avionics: running
+  }
+}
+
+/** Mixture below this starves the engine of fuel. */
+export const MIXTURE_CUTOFF = 0.08
+
+/**
+ * The mixture setting that gives the most power at a height in metres. Full rich is best at
+ * sea level; the thinner air high up needs less fuel.
+ */
+export const bestMixture = (altitude: number) => 1 - 0.4 * Math.min(1, Math.max(0, altitude) / 3000)
 
 /** One engine's state. `starting` counts the seconds its starter has turned it. */
 export type EngineState = {
@@ -94,6 +136,19 @@ const LIMIT_MARGIN = 5
 const STRAIN_LIMIT = 3
 // Seconds engines keep running after the fuel feed is cut
 const FUEL_LINE_SECONDS = 20
+// Engine power share above which the propeller no longer windmills
+const WINDMILL_POWER = 0.3
+// Seconds of fuel pump with a rich mixture that prime a cold engine, and that flood it
+const PRIME_NEEDED = 1.5
+const FLOODED = 8
+// Seconds after shutdown an engine stays warm enough to start without a prime
+const WARM_SECONDS = 600
+// Seconds an engine that fired on its prime runs at idle cutoff, for the mixture to come in
+const FIRING_SECONDS = 3
+// Throttle open this far while cranking at idle cutoff clears a flooded engine
+const CLEARING_THROTTLE = 0.8
+// Seconds a running engine stumbles on, leaned too far to make power, before it dies
+const LEAN_SECONDS = 1.5
 // Stalled-wing coupling saturates at these roll and yaw rates, which bounds the spin
 const SPIN_RATE_LIMIT = 0.1
 // Shares of a full tank: the fuel the aircraft's listed mass includes, the load for a start
@@ -227,6 +282,14 @@ export class FlightSim {
   private gearStrain = 0
   private overspeedStrain = 0
   private starved = 0
+  /** Seconds of priming fuel in the cylinders of a stopped piston engine. */
+  prime = 0
+  /** Seconds since the engine last ran. */
+  private sinceRun = Number.POSITIVE_INFINITY
+  /** Seconds left for an engine running on its prime alone, at idle cutoff. */
+  private firing = 0
+  /** Seconds the running engine has been too lean to make power. */
+  private starving = 0
 
   /** True once at least one engine has started. */
   get engineRunning() {
@@ -649,10 +712,13 @@ export class FlightSim {
     const engine = this.spec.engine
     const thin = density / SEA_LEVEL_DENSITY
     if (engine.type === 'piston') {
-      return (
+      const pull =
         (state.power * engine.shaftPower * engine.propEfficiency * pistonAir(engine, density)) /
         Math.hypot(forwardSpeed, engine.staticThrustSpeed)
-      )
+      const windmill = Math.max(0, 1 - state.power / WINDMILL_POWER)
+      const drag =
+        0.5 * density * forwardSpeed * Math.abs(forwardSpeed) * (engine.windmillArea ?? 0)
+      return pull - drag * windmill
     }
     if (!state.running && state.power < 0.02) return 0
     const dry = lerp(
@@ -711,6 +777,10 @@ export class FlightSim {
     this.gearStrain = 0
     this.overspeedStrain = 0
     this.starved = 0
+    this.prime = 0
+    this.sinceRun = Number.POSITIVE_INFINITY
+    this.firing = 0
+    this.starving = 0
     this.rollout = false
     this.fuel = this.spec.fuelCapacity
     this.crash = null
@@ -755,11 +825,14 @@ export class FlightSim {
     this.reversePosition = approach(this.reversePosition, reverseTarget, dt)
 
     this.checkLimits(dt, controls)
+    const procedures = A.engine.type === 'piston' ? controls.procedures : undefined
     // Engines run on with the fuel feed off only until the lines run dry
-    this.starved = controls.fuelPumps ? 0 : this.starved + dt
+    const feeding = procedures ? procedures.fuelSelector !== 'off' : controls.fuelPumps
+    this.starved = feeding ? 0 : this.starved + dt
     const fed = this.fuel > 0 && this.starved < FUEL_LINE_SECONDS
     // The starter needs electrical power, and the engine needs fuel to light
     const canStart = this.powered && controls.fuelPumps
+    if (procedures) this.updatePrime(dt, procedures, fed, controls.throttle)
     // One starter turns at a time, so switched-on engines start in order
     let starterBusy = !canStart
     const idle = A.engine.type === 'piston' ? A.engine.idlePower : 0
@@ -779,7 +852,9 @@ export class FlightSim {
     this.afterburner = false
     for (let i = 0; i < this.engines.length; i++) {
       const engine = this.engines[i]
-      if (!controls.engineSwitches[i] || !fed || engine.failed) {
+      if (procedures) {
+        this.runByHand(dt, engine, procedures, fed)
+      } else if (!controls.engineSwitches[i] || !fed || engine.failed) {
         engine.running = false
         engine.starting = 0
       } else if (!engine.running && !starterBusy) {
@@ -793,7 +868,8 @@ export class FlightSim {
         // Another engine took the starter, so this one spins down and starts over later
         engine.starting = 0
       }
-      const target = engine.running ? lerp(idle, 1, controls.throttle) : 0
+      const mixture = procedures ? this.mixturePower(procedures) : 1
+      const target = engine.running ? lerp(idle, 1, controls.throttle) * mixture : 0
       engine.power += (target - engine.power) * spool
       power += engine.power
       if (!engine.running) continue
@@ -805,7 +881,9 @@ export class FlightSim {
     }
     this.enginePower = power / this.engines.length
     this.enginesRunning = running
-    this.powered = controls.battery || running > 0
+    // With real procedures the master switch alone powers the bus, as on a light aircraft
+    this.powered = controls.battery || (running > 0 && !procedures)
+    this.sinceRun = running > 0 ? 0 : this.sinceRun + dt
     this.fuel = Math.max(0, this.fuel - (burn / this.engines.length) * dt)
     // Dumping needs power for the pumps and stops by itself at a landing fuel load
     const floor = A.fuelCapacity * DUMP_FLOOR
@@ -849,6 +927,78 @@ export class FlightSim {
   }
 
   /** One engine's share of its full fuel burn, 0 to 1. An afterburner uses six times full dry power. */
+  /**
+   * Priming: the fuel pump with a rich mixture wets the cylinders of a stopped engine. The
+   * fuel slowly evaporates. Cranking with the throttle wide open and the mixture at cutoff
+   * blows out a flood, as the handbook's flooded start does.
+   */
+  private updatePrime(dt: number, procedures: Procedures, fed: boolean, throttle: number) {
+    if (this.enginesRunning > 0 && this.firing <= 0) {
+      this.prime = 0
+      return
+    }
+    if (procedures.auxPump && procedures.mixture > 0.5 && fed) this.prime += dt
+    const clearing =
+      procedures.magnetos === 'start' &&
+      procedures.mixture < MIXTURE_CUTOFF &&
+      throttle > CLEARING_THROTTLE
+    this.prime = Math.max(0, this.prime - dt * (clearing ? 1.5 : 0.02))
+  }
+
+  /** True while a flooded engine will not fire until it is cleared. */
+  get flooded() {
+    return this.prime > FLOODED
+  }
+
+  /**
+   * A piston engine started and run by its real controls. It fires on its prime while the
+   * starter turns, even at idle cutoff, then dies unless the mixture comes in within seconds.
+   */
+  private runByHand(dt: number, engine: EngineState, procedures: Procedures, fed: boolean) {
+    const rich = procedures.mixture > MIXTURE_CUTOFF
+    const ignition = procedures.magnetos !== 'off'
+    if (engine.running) {
+      // The prime carries the engine until the mixture is in far enough to run on
+      const power = this.mixturePower(procedures)
+      if (power >= 0.5) this.firing = 0
+      else if (this.firing > 0) this.firing -= dt
+      const onPrime = this.firing > 0
+      // Too lean to burn for more than a moment, or no spark or fuel, and it stops
+      this.starving = power < 0.05 && !onPrime ? this.starving + dt : 0
+      const quits = this.starving > LEAN_SECONDS || (!rich && !onPrime)
+      if (!ignition || !fed || engine.failed || quits) {
+        engine.running = false
+        this.firing = 0
+        this.starving = 0
+      }
+      return
+    }
+    const cranking = procedures.magnetos === 'start' && this.powered && !engine.failed
+    if (!cranking) {
+      engine.starting = 0
+      return
+    }
+    engine.starting += dt
+    const warm = this.sinceRun < WARM_SECONDS
+    const primed = warm || (this.prime >= PRIME_NEEDED && !this.flooded)
+    if (engine.starting >= this.spec.starterSeconds && fed && primed) {
+      engine.running = true
+      engine.starting = 0
+      if (!rich) this.firing = FIRING_SECONDS
+    }
+  }
+
+  /**
+   * Share of full power the mixture allows: full at the best setting, a little less rich of
+   * it, falling fast when leaned past it, and a little less on one magneto.
+   */
+  private mixturePower(procedures: Procedures) {
+    const off = procedures.mixture - bestMixture(this.position.y)
+    const mixture = off >= 0 ? 1 - 0.6 * off * off : 1 - 6 * off * off
+    const single = procedures.magnetos === 'left' || procedures.magnetos === 'right'
+    return Math.max(0, mixture) * (single ? 0.97 : 1)
+  }
+
   private fuelDemand(power: number) {
     const engine = this.spec.engine
     if (engine.type === 'piston' || engine.afterburnerFrom >= 1) return power

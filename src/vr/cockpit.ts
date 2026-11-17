@@ -1,6 +1,7 @@
 import {
   BoxGeometry,
   CanvasTexture,
+  Euler,
   Group,
   type Material,
   Mesh,
@@ -27,6 +28,7 @@ import {
 } from './controls'
 import { drawFlightDisplay, Screen, systemsDisplay } from './displays'
 import type { Interactor } from './input'
+import type { Checklist } from './tablet'
 
 /** The panel face, facing the pilot, in metres ahead of the eye. */
 const PANEL_Z = -0.7
@@ -37,7 +39,7 @@ const PANEL_BOTTOM = -0.52
 // Top of the side consoles the levers stand in
 const CONSOLE_Y = -0.47
 // Hand travel in metres for full stick deflection
-const STICK_TRAVEL = 0.07
+const STICK_TRAVEL = 0.085
 // Panel face pixels per metre, enough for the button labels to read at arm's length
 const FACE_RESOLUTION = 1800
 // Size of each glass screen, and how far either side of centre it sits
@@ -79,15 +81,31 @@ const DARK = new MeshStandardMaterial({ color: 0x15181b, roughness: 0.9, emissiv
 const MASTER_OFF = 0x3a0d0b
 const MASTER_ON = 0xff2a1a
 
+/** A cockpit the VR seat carries: its model, its controls, and where its tablet hangs. */
+export interface CockpitView {
+  readonly spec: AircraftSpec
+  readonly group: Group
+  readonly controls: ControlSet
+  /** The hand on the stick or yoke, if any. */
+  readonly flyingHand: Interactor | null
+  readonly flightHeld: boolean
+  readonly throttleHeld: boolean
+  readonly tablet: { position: Vector3; rotation: Euler }
+  /** The aircraft's own checklists, for the tablet, or null for none. */
+  readonly checklists: Checklist[] | null
+  update(dt: number, interactors: Interactor[], time: number): void
+  dispose(): void
+}
+
 /** Taps a keyboard key on the pilot, so a panel button does exactly what the key does. */
-function key(code: string) {
+export function key(code: string) {
   const { pilot, sim, nav } = game
   if (game.getState().status !== 'flying') return
   pilot.press(code, false, sim, nav)
   pilot.release(code)
 }
 
-const flying = (act: () => void) => () => {
+export const flying = (act: () => void) => () => {
   if (game.getState().status === 'flying') act()
 }
 
@@ -95,8 +113,14 @@ const flying = (act: () => void) => () => {
  * The cockpit around the pilot in VR, life size: panel, screens, buttons, levers, and the
  * stick or yoke. Built for one aircraft; the seat rebuilds it when the aircraft changes.
  */
-export class Cockpit {
+export class Cockpit implements CockpitView {
   readonly group = new Group()
+  /** Mounted on the left wall beside the pilot, clear of the panel and the windscreen. */
+  readonly tablet = {
+    position: new Vector3(-0.46, -0.2, -0.24),
+    rotation: new Euler(-0.2, 1.05, 0, 'YXZ')
+  }
+  readonly checklists = null
   readonly controls: ControlSet
   private readonly flightControl: Stick | Yoke
   private readonly throttle: Lever
@@ -382,7 +406,7 @@ export class Cockpit {
     const flight = this.flightControl
     // A stick springing back still moves the surfaces, until it is centred
     if (flight.held || Math.abs(flight.pitch) + Math.abs(flight.roll) > 0.002) {
-      analog.stick = { pitch: flight.pitch, roll: flight.roll }
+      analog.stick = flight.output
     }
     if (this.throttle.held) analog.throttle = this.throttle.value
     analog.brake = Math.max(analog.brake, this.brake.value)

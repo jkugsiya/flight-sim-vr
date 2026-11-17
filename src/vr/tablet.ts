@@ -1,6 +1,7 @@
 import {
   BoxGeometry,
   CanvasTexture,
+  type Euler,
   Group,
   Matrix4,
   Mesh,
@@ -88,7 +89,13 @@ export function forVR(text: string) {
 }
 
 type Rect = { x: number; y: number; w: number; h: number; act: () => void }
-type Page = 'fly' | 'missions' | 'help'
+type Page = 'fly' | 'missions' | 'checklist' | 'help'
+
+/**
+ * A checklist whose items tick themselves off, in order, as the pilot does each one. An
+ * item can only tick once the one before it has.
+ */
+export type Checklist = { title: string; items: { text: string; done: () => boolean }[] }
 
 /** What the tablet needs from the VR cockpit around it. */
 export type TabletActions = { recenter: () => void; exit: () => void }
@@ -107,6 +114,13 @@ export class Tablet {
   private readonly local = new Vector3()
   private buttons: Rect[] = []
   private page: Page = 'fly'
+  /** In flight: the flight card, or the checklist. */
+  private flightPage: 'flight' | 'checklist' = 'flight'
+  private checklists: Checklist[] | null = null
+  private checklist = 0
+  /** How many items of each checklist are done. */
+  private progress: number[] = []
+  private flight = -1
   private missionPage = 0
   private briefing: Mission | null = null
   private sinceDraw = REFRESH
@@ -141,6 +155,39 @@ export class Tablet {
     // Mounted on the left wall beside the pilot, clear of the panel and the windscreen
     this.group.position.set(-0.46, -0.2, -0.24)
     this.group.rotation.set(-0.2, 1.05, 0, 'YXZ')
+  }
+
+  /** Mounts the tablet in the cockpit, in cockpit axes. */
+  place(position: Vector3, rotation: Euler) {
+    this.group.position.copy(position)
+    this.group.rotation.copy(rotation)
+  }
+
+  /** The aircraft's own checklists, or null for none. */
+  setChecklists(checklists: Checklist[] | null) {
+    this.checklists = checklists
+    this.progress = checklists?.map(() => 0) ?? []
+    this.checklist = 0
+    if (!checklists && this.page === 'checklist') this.page = 'fly'
+    if (!checklists) this.flightPage = 'flight'
+    this.refresh()
+  }
+
+  /** Ticks off the next item of the open checklist once the pilot has done it. */
+  private tickChecklist() {
+    // Each new flight starts every checklist afresh
+    if (game.flight !== this.flight) {
+      this.flight = game.flight
+      this.progress = this.checklists?.map(() => 0) ?? []
+      this.refresh()
+    }
+    const list = this.checklists?.[this.checklist]
+    if (!list) return
+    const done = this.progress[this.checklist]
+    if (done < list.items.length && list.items[done].done()) {
+      this.progress[this.checklist] = done + 1
+      this.refresh()
+    }
   }
 
   /** Redraws on the next frame, after the game changes under it. */
@@ -179,6 +226,7 @@ export class Tablet {
       else this.depth.delete(it)
     }
     this.cursor.visible = pointed
+    this.tickChecklist()
     this.sinceDraw += dt
     if (this.sinceDraw >= REFRESH) {
       this.sinceDraw = 0
@@ -213,6 +261,7 @@ export class Tablet {
       y = this.tabs(y)
       if (this.page === 'fly') this.drawSetup(y)
       else if (this.page === 'missions') this.drawMissions(y)
+      else if (this.page === 'checklist') this.drawChecklist(y)
       else this.drawHelp(y)
     }
     this.texture.needsUpdate = true
@@ -285,9 +334,10 @@ export class Tablet {
     const tabs: [Page, string][] = [
       ['fly', 'Free Flight'],
       ['missions', 'Missions'],
+      ...(this.checklists ? ([['checklist', 'Checklist']] as [Page, string][]) : []),
       ['help', 'Help']
     ]
-    const w = (W - 48 - 16) / 3
+    const w = (W - 48 - (tabs.length - 1) * 8) / tabs.length
     tabs.forEach(([page, label], i) => {
       this.button(
         label,
@@ -445,6 +495,29 @@ export class Tablet {
     })
   }
 
+  /** The open checklist, with the done items ticked and the next one marked. */
+  private drawChecklist(y: number) {
+    const lists = this.checklists
+    if (!lists) return
+    const list = lists[this.checklist]
+    const step = (by: number) => () => {
+      this.checklist = (this.checklist + by + lists.length) % lists.length
+    }
+    this.button('‹', 24, y, 56, 52, step(-1))
+    this.button('›', W - 80, y, 56, 52, step(1))
+    this.text(list.title, 92, y + 12, 24, INK, 800)
+    y += 68
+    const done = this.progress[this.checklist]
+    list.items.forEach((item, i) => {
+      const mark = i < done ? '✓' : i === done ? '›' : '·'
+      const color = i < done ? GOOD : i === done ? INK : MUTED
+      y = this.paragraph(`${mark} ${item.text}`, 24, y, 20, color, 2) + 4
+    })
+    this.button('Start Over', 24, H - 84, W - 48, 60, () => {
+      this.progress[this.checklist] = 0
+    })
+  }
+
   private drawHelp(y: number) {
     const lines = [
       ['Bare hands', ''],
@@ -479,6 +552,35 @@ export class Tablet {
     const state = game.getState()
     const { mission } = state
     let y = 24
+    if (this.checklists) {
+      const half = (W - 48 - 8) / 2
+      const pick = (page: 'flight' | 'checklist') => () => {
+        this.flightPage = page
+      }
+      this.button(
+        'Flight',
+        24,
+        16,
+        half,
+        52,
+        pick('flight'),
+        this.flightPage === 'flight' ? 'on' : 'plain'
+      )
+      this.button(
+        'Checklist',
+        32 + half,
+        16,
+        half,
+        52,
+        pick('checklist'),
+        this.flightPage === 'checklist' ? 'on' : 'plain'
+      )
+      y = 84
+      if (this.flightPage === 'checklist') {
+        this.drawChecklist(y)
+        return
+      }
+    }
     if (mission) {
       const runner = game.missions
       this.text(mission.title, 24, y, 30, INK, 800)

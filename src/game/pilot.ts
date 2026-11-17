@@ -1,5 +1,5 @@
 import { type AircraftSpec, isGlider, KNOT, tailStrikePitch } from '../sim/aircraft'
-import type { Controls, FlightSim } from '../sim/flight-sim'
+import { type Controls, type FlightSim, procedureState } from '../sim/flight-sim'
 import type { Approach } from '../world/approaches'
 import { heightAt } from '../world/island'
 import type { Navigator } from './navigation'
@@ -180,6 +180,13 @@ export class Pilot {
    */
   resetForGround(sim: FlightSim, cold: boolean) {
     Object.assign(this.controls, PARKED, { battery: !cold, fuelPumps: !cold })
+    // On the runway the master and radios are on, ready for the engine start
+    if (this.controls.procedures) {
+      Object.assign(this.controls.procedures, procedureState(false), {
+        alternator: !cold,
+        avionics: !cold
+      })
+    }
     this.landingLights = false
     this.controls.engineSwitches.fill(false)
     this.disengage()
@@ -197,6 +204,7 @@ export class Pilot {
       gearDown: !spec.retractableGear
     })
     this.controls.engineSwitches.fill(true)
+    if (this.controls.procedures) Object.assign(this.controls.procedures, procedureState(true))
     this.disengage()
     if (sim) this.syncKnobs(sim)
   }
