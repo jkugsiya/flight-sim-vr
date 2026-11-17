@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useRef } from 'react'
-import { game } from '../game/game'
+import { game, useGame } from '../game/game'
 import type { Knob, LateralMode, VerticalMode } from '../game/pilot'
 import type { FlightSim } from '../sim/flight-sim'
 import {
@@ -176,6 +176,8 @@ const MODES: Mode[] = [
  * and the mode buttons. It goes dark without electrical power.
  */
 export function AutopilotPanel() {
+  // A helicopter holds its speed with the cyclic trim, so it has no autothrottle or level change
+  const rotor = useGame(state => state.flown.rotor !== undefined)
   const panel = useRef<HTMLDivElement>(null)
   const speed = useRef<HTMLSpanElement>(null)
   const heading = useRef<HTMLSpanElement>(null)
@@ -215,10 +217,14 @@ export function AutopilotPanel() {
       ref={panel}
       className="border-panel-edge bg-panel/95 flex items-end justify-center gap-3 rounded-md border px-3 py-1.5 shadow-lg transition-opacity data-[dark=true]:opacity-60"
     >
-      <ModeButton mode={MODES[0]} lamp={lamp} index={0} />
-      <KnobControl label="SPEED kt" knob="speed">
-        <span ref={speed} />
-      </KnobControl>
+      {!rotor && (
+        <>
+          <ModeButton mode={MODES[0]} lamp={lamp} index={0} />
+          <KnobControl label="SPEED kt" knob="speed">
+            <span ref={speed} />
+          </KnobControl>
+        </>
+      )}
       <KnobControl label="HEADING" knob="heading">
         <span ref={heading} />
       </KnobControl>
@@ -234,7 +240,7 @@ export function AutopilotPanel() {
         <span ref={climb} />
       </KnobControl>
       <div className="flex gap-1">
-        {[3, 4, 5, 6, 7, 8].map(i => (
+        {(rotor ? [3, 4, 6, 7, 8] : [3, 4, 5, 6, 7, 8]).map(i => (
           <ModeButton key={i} mode={MODES[i]} lamp={lamp} index={i} />
         ))}
       </div>

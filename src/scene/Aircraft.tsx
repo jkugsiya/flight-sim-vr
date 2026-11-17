@@ -7,6 +7,7 @@ import {
   Color,
   DoubleSide,
   type Group,
+  type Material,
   MeshBasicMaterial,
   MeshStandardMaterial,
   Quaternion,
@@ -15,7 +16,15 @@ import {
 } from 'three'
 import { game, useGame } from '../game/game'
 import { PART_NAMES, type PartName } from '../game/wreck'
-import type { AircraftSpec, AirlinerShape, BomberShape, Shape, ShuttleShape } from '../sim/aircraft'
+import type {
+  AircraftSpec,
+  AirlinerShape,
+  BomberShape,
+  HelicopterShape,
+  RotorSpec,
+  Shape,
+  ShuttleShape
+} from '../sim/aircraft'
 import { useDisposal } from './dispose'
 
 const QUARTER_TURN = Math.PI / 2
@@ -185,6 +194,9 @@ export function Aircraft() {
           <PropellerModel key={spec.id} spec={spec} shape={shape} />
         ))}
       {shape.type === 'shuttle' && <ShuttleModel key={spec.id} spec={spec} shape={shape} />}
+      {shape.type === 'helicopter' && spec.rotor && (
+        <HelicopterModel key={spec.id} spec={spec} shape={shape} rotor={spec.rotor} />
+      )}
       <Cockpit spec={spec} />
     </>
   )
@@ -1762,7 +1774,7 @@ function bomberEdges(outline: [number, number][], x: number) {
  * One side of the flying wing between two distances out, from the outline and the
  * stations' thickness: deepest a third of the way back, thin at both edges.
  */
-function flyingWingGeometry(shape: BomberShape, from: number, to: number, side: 1 | -1) {
+export function flyingWingGeometry(shape: BomberShape, from: number, to: number, side: 1 | -1) {
   const positions: number[] = []
   const quad = (a: number[], b: number[], c: number[], d: number[]) => {
     const order = side === 1 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]
@@ -2769,6 +2781,476 @@ function ShuttleModel({ spec, shape }: { spec: AircraftSpec; shape: ShuttleShape
   )
 }
 
+// The Black Hawk's fuselage from the nose to the end of the tail boom
+const BLACK_HAWK_BODY: Section[] = [
+  [-7.55, 0.04, -0.6, -0.68, 2],
+  [-7.4, 0.42, -0.36, -0.98, 2.2],
+  [-7, 0.8, -0.1, -1.2, 2.6],
+  [-6.6, 0.98, 0.12, -1.28, 3],
+  [-5.7, 1.1, 0.8, -1.32, 3.6],
+  [-4.8, 1.16, 0.86, -1.32, 4],
+  [1.8, 1.18, 0.86, -1.3, 4],
+  [3.4, 0.96, 0.84, -0.85, 3.4],
+  [5.2, 0.52, 0.8, -0.2, 2.6],
+  [7, 0.34, 0.74, 0.12, 2.2],
+  [9, 0.26, 0.7, 0.32, 2.2],
+  [9.9, 0.2, 0.68, 0.42, 2],
+  [10.05, 0.03, 0.58, 0.54, 2]
+]
+// The engine deck on the cabin roof: the transmission fairing, tapering back into the boom
+const BLACK_HAWK_DECK: Section[] = [
+  [-3, 0.05, 0.86, 0.8, 2],
+  [-2.3, 0.66, 1.42, 0.7, 3],
+  [0.6, 0.8, 1.6, 0.7, 3.2],
+  [2.3, 0.66, 1.42, 0.7, 3],
+  [4, 0.26, 0.96, 0.7, 2.5],
+  [4.7, 0.04, 0.8, 0.74, 2]
+]
+// Where the cockpit nose meets the cabin, the cabin meets the tail boom, and the windscreen runs
+const COCKPIT_BACK = -4.6
+const CABIN_BACK = 3.8
+const WINDSCREEN: [number, number] = [-6.6, -5.7]
+// The tail rotor shaft tilts 20° up from the body's x axis, so the tail rotor lifts as well
+const TAIL_CANT = (20 * Math.PI) / 180
+// The tail rotor turns 4.6 times for each turn of the main rotor
+const TAIL_GEARING = 4.6
+// Rotor speeds, as shares of 100%, over which each rotor's blades fade into a blurred disc
+const MAIN_BLUR: [number, number] = [0.3, 0.5]
+const TAIL_BLUR: [number, number] = [0.08, 0.2]
+const DISC_OPACITY = 0.2
+// Droop of the main blades in radians with the rotor stopped
+const BLADE_DROOP = 0.045
+const MAIN_TYRE = 0.33
+const TAIL_TYRE = 0.2
+
+/** Where the Black Hawk's lights sit in body axes: position lights, tail light, and beacon. */
+export const BLACK_HAWK_LIGHTS = {
+  left: new Vector3(-1, 0.7, 1),
+  right: new Vector3(1, 0.7, 1),
+  tail: new Vector3(0, 1, 10.2),
+  top: new Vector3(0, 2.66, 9.75)
+}
+
+/** `sections` grown outward by `by` metres all round, for panels laid over the skin. */
+const grown = (sections: Section[], by: number): Section[] =>
+  sections.map(([z, halfWidth, top, bottom, square]) => [
+    z,
+    halfWidth + by,
+    top + by,
+    bottom - by,
+    square
+  ])
+
+/** A band of angles around a lofted body on the right side and, mirrored, on the left. */
+const bothSides = (from: number, to: number): [number, number][] => [
+  [from, to],
+  [Math.PI * 2 - to, Math.PI * 2 - from]
+]
+
+/** Angles of `count` blades spaced evenly round a hub. */
+const spokes = (count: number) => Array.from({ length: count }, (_, i) => (i * Math.PI * 2) / count)
+
+/** Share of a rotor's blur shown at `speed`, from 0 at the start of `range` to 1 at its end. */
+const blurAt = (speed: number, [from, to]: [number, number]) =>
+  Math.min(1, Math.max(0, (speed - from) / (to - from)))
+
+/**
+ * Sikorsky UH-60 Black Hawk: a long low cabin with sliding doors, the engine deck on the
+ * roof, a tapering tail boom up to a swept pylon with the canted tail rotor on its right,
+ * and the stabilator at its foot. The main rotor turns with the flight model's blade angle
+ * and blurs into a disc at speed.
+ */
+function HelicopterModel(props: { spec: AircraftSpec; shape: HelicopterShape; rotor: RotorSpec }) {
+  const { spec, shape, rotor } = props
+  const airframe = useAirframe(spec, shape.paint, shape.accent)
+  const { paint } = airframe
+  const built = useMemo(() => {
+    const top = Math.PI
+    const screen: [number, number] = [top - 1.05, top + 1.05]
+    const [nose, tail] = [BLACK_HAWK_BODY[0][0], BLACK_HAWK_BODY[BLACK_HAWK_BODY.length - 1][0]]
+    const [deckFront, deckBack] = [
+      BLACK_HAWK_DECK[0][0],
+      BLACK_HAWK_DECK[BLACK_HAWK_DECK.length - 1][0]
+    ]
+    // Door panels sit 2 cm proud of the skin, and the windows proud of the doors
+    const panels = grown(BLACK_HAWK_BODY, 0.02)
+    const glazing = grown(BLACK_HAWK_BODY, 0.035)
+    const band = (sections: Section[], from: number, to: number, arcs: [number, number][]) =>
+      arcs.map(arc => loftGeometry(sections, from, to, arc))
+    const chord = rotor.chord / 2
+    const blade = () =>
+      new MeshStandardMaterial({ color: '#26292b', roughness: 0.6, transparent: true })
+    const disc = () =>
+      new MeshStandardMaterial({
+        color: '#2f332f',
+        roughness: 1,
+        transparent: true,
+        opacity: 0,
+        side: DoubleSide,
+        depthWrite: false
+      })
+    return {
+      mainBlade: blade(),
+      tailBlade: blade(),
+      mainDisc: disc(),
+      tailDisc: disc(),
+      nose: [
+        loftGeometry(BLACK_HAWK_BODY, nose, COCKPIT_BACK, [0, screen[0]]),
+        loftGeometry(BLACK_HAWK_BODY, nose, COCKPIT_BACK, [screen[1], top * 2]),
+        loftGeometry(BLACK_HAWK_BODY, nose, WINDSCREEN[0], screen),
+        loftGeometry(BLACK_HAWK_BODY, WINDSCREEN[1], COCKPIT_BACK, screen)
+      ],
+      windscreen: loftGeometry(BLACK_HAWK_BODY, WINDSCREEN[0], WINDSCREEN[1], screen),
+      cockpitWindows: band(glazing, -5.5, -4.75, bothSides(1.72, 2.3)),
+      cabin: loftGeometry(BLACK_HAWK_BODY, COCKPIT_BACK, CABIN_BACK),
+      doors: band(panels, -3.5, -1.5, bothSides(1, 2.2)),
+      // The gunner's window ahead of each door, then two windows in the door
+      cabinWindows: [
+        [-4.3, -3.8],
+        [-3.25, -2.6],
+        [-2.3, -1.7]
+      ].flatMap(([from, to]) => band(glazing, from, to, bothSides(1.65, 2.05))),
+      // The doors slide back along this rail
+      rails: band(panels, -3.6, 0.6, bothSides(2.22, 2.28)),
+      boom: loftGeometry(BLACK_HAWK_BODY, CABIN_BACK, tail),
+      deck: loftGeometry(BLACK_HAWK_DECK, deckFront, deckBack),
+      // Side view of the pylon as (height, z) pairs, stood upright on the boom
+      pylon: plateGeometry(
+        [
+          [0.3, 7.5],
+          [2.2, 9.1],
+          [2.5, 9.45],
+          [2.6, 9.95],
+          [2.45, 10.2],
+          [0.3, 10.1]
+        ],
+        0.3
+      ).rotateZ(QUARTER_TURN),
+      stabilator: plateGeometry(
+        [
+          [-2.19, 9.15],
+          [-0.2, 8.95],
+          [0.2, 8.95],
+          [2.19, 9.15],
+          [2.19, 9.9],
+          [-2.19, 9.9]
+        ],
+        0.08
+      ),
+      // One main blade along +x, its leading edge toward -z, with the swept tip
+      blade: plateGeometry(
+        [
+          [0.5, -chord * 0.6],
+          [1, -chord],
+          [rotor.radius - 0.6, -chord],
+          [rotor.radius, -chord * 0.2],
+          [rotor.radius, chord],
+          [1, chord],
+          [0.5, chord * 0.6]
+        ],
+        0.07
+      )
+    }
+  }, [rotor])
+  useDisposal(built)
+
+  const mainRotor = useRef<Group>(null)
+  const mainBlades = useRef<Group>(null)
+  const mainDisc = useRef<Group>(null)
+  const droops = useRef<(Group | null)[]>([])
+  const tailRotor = useRef<Group>(null)
+  const tailBlades = useRef<Group>(null)
+  const tailDisc = useRef<Group>(null)
+  const beacons = useRef<(Group | null)[]>([])
+  const lamp = useRef<Group>(null)
+
+  useFrame(({ clock }) => {
+    const { sim, pilot, wreck } = game
+    // The wreck keeps the rotors where they stopped
+    const speed = wreck.active ? 0 : sim.rotorSpeed
+    if (!wreck.active) {
+      if (mainRotor.current) mainRotor.current.rotation.y = sim.rotorAngle
+      if (tailRotor.current) tailRotor.current.rotation.x = sim.rotorAngle * TAIL_GEARING
+    }
+    // Fast blades fade into a faint disc, so they blur instead of strobing
+    const blur = (
+      share: number,
+      blade: Material,
+      disc: Material,
+      blades: Group,
+      blurred: Group
+    ) => {
+      blade.opacity = 1 - share
+      disc.opacity = share * DISC_OPACITY
+      blades.visible = share < 1
+      blurred.visible = share > 0
+    }
+    if (mainBlades.current && mainDisc.current) {
+      blur(
+        blurAt(speed, MAIN_BLUR),
+        built.mainBlade,
+        built.mainDisc,
+        mainBlades.current,
+        mainDisc.current
+      )
+    }
+    if (tailBlades.current && tailDisc.current) {
+      blur(
+        blurAt(speed, TAIL_BLUR),
+        built.tailBlade,
+        built.tailDisc,
+        tailBlades.current,
+        tailDisc.current
+      )
+    }
+    // The blades droop at rest and straighten out as the rotor spins up
+    const droop = -BLADE_DROOP * Math.max(0, 1 - speed / 0.5)
+    for (const blade of droops.current) if (blade) blade.rotation.z = droop
+    // The red beacons on the pylon and under the belly flash once a second
+    const flash = !wreck.active && clock.elapsedTime % 1 < 0.12
+    for (const beacon of beacons.current) if (beacon) beacon.visible = flash
+    if (lamp.current) lamp.current.visible = pilot.landingLights && !wreck.active
+  })
+
+  const [tailWheel, leftMain, rightMain] = spec.contactPoints.map(point => point.position)
+  const roof = (z: number) => sectionAt(BLACK_HAWK_BODY, z)[2]
+  /** A main wheel on its shock strut up to the cabin side, braced by a drag beam behind it. */
+  const mainLeg = (wheel: Vector3) => {
+    const side = Math.sign(wheel.x)
+    const axle: [number, number, number] = [wheel.x, wheel.y + MAIN_TYRE, wheel.z]
+    const hub: [number, number, number] = [wheel.x - side * 0.12, axle[1], wheel.z]
+    return (
+      <group key={side}>
+        <Strut
+          from={[side * 1.12, -0.55, wheel.z - 0.15]}
+          to={hub}
+          radius={0.07}
+          material={paint.dark}
+        />
+        <Strut
+          from={[side * 0.85, -1.2, wheel.z + 1]}
+          to={hub}
+          radius={0.06}
+          material={paint.dark}
+        />
+        <Wheel position={axle} radius={MAIN_TYRE} material={paint.dark} />
+      </group>
+    )
+  }
+  const beacon = (index: number, position: Vector3 | [number, number, number]) => (
+    <group
+      ref={group => {
+        beacons.current[index] = group
+      }}
+      position={position}
+    >
+      <mesh material={paint.red}>
+        <sphereGeometry args={[0.08, 8, 6]} />
+      </mesh>
+    </group>
+  )
+  const tailAxle = tailWheel.y + TAIL_TYRE
+  const tailBladeLength = rotor.tailRadius - 0.15
+
+  return (
+    <group ref={airframe.root}>
+      <Part airframe={airframe} name="fuselage">
+        <mesh castShadow material={paint.body} geometry={built.cabin} />
+        {built.doors.map(geometry => (
+          <mesh key={geometry.uuid} material={paint.accent} geometry={geometry} />
+        ))}
+        {built.cabinWindows.map(geometry => (
+          <mesh key={geometry.uuid} material={paint.glass} geometry={geometry} />
+        ))}
+        {built.rails.map(geometry => (
+          <mesh key={geometry.uuid} material={paint.dark} geometry={geometry} />
+        ))}
+        {mainLeg(leftMain)}
+        {mainLeg(rightMain)}
+        {/* Position lights: red on the left, green on the right */}
+        <mesh material={paint.red} position={BLACK_HAWK_LIGHTS.left}>
+          <sphereGeometry args={[0.06, 8, 6]} />
+        </mesh>
+        <mesh material={paint.green} position={BLACK_HAWK_LIGHTS.right}>
+          <sphereGeometry args={[0.06, 8, 6]} />
+        </mesh>
+        {beacon(1, [0, -1.36, 0.6])}
+      </Part>
+
+      <Part airframe={airframe} name="nose">
+        {built.nose.map(geometry => (
+          <mesh key={geometry.uuid} castShadow material={paint.body} geometry={geometry} />
+        ))}
+        <mesh material={paint.glass} geometry={built.windscreen} />
+        {built.cockpitWindows.map(geometry => (
+          <mesh key={geometry.uuid} material={paint.glass} geometry={geometry} />
+        ))}
+        {/* Post between the two windscreen panes, and the pitot tubes over the cockpit roof */}
+        <Strut
+          from={[0, roof(WINDSCREEN[0]) + 0.03, WINDSCREEN[0]]}
+          to={[0, roof(WINDSCREEN[1]) + 0.03, WINDSCREEN[1]]}
+          radius={0.035}
+          material={paint.dark}
+        />
+        {[-0.35, 0.35].map(x => (
+          <Strut
+            key={x}
+            from={[x, 0.86, -5.2]}
+            to={[x, 0.9, -6.1]}
+            radius={0.02}
+            material={paint.dark}
+          />
+        ))}
+        <group ref={lamp} position={[0, -1.3, -6.3]}>
+          <mesh>
+            <sphereGeometry args={[0.1, 8, 6]} />
+            <meshBasicMaterial color="#fffbe6" toneMapped={false} />
+          </mesh>
+        </group>
+      </Part>
+
+      <Part airframe={airframe} name="leftWing">
+        <group position={rotor.hub}>
+          {/* Mast up from the transmission */}
+          <mesh castShadow material={paint.dark} position={[0, -0.25, 0]}>
+            <cylinderGeometry args={[0.16, 0.2, 0.5, 12]} />
+          </mesh>
+          <group ref={mainRotor}>
+            <mesh castShadow material={paint.dark}>
+              <cylinderGeometry args={[0.42, 0.42, 0.18, 12]} />
+            </mesh>
+            {/* The bifilar vibration absorber on top of the hub: four arms with weights */}
+            <mesh material={paint.dark} position={[0, 0.2, 0]}>
+              <boxGeometry args={[1.1, 0.05, 0.08]} />
+            </mesh>
+            <mesh material={paint.dark} position={[0, 0.2, 0]}>
+              <boxGeometry args={[0.08, 0.05, 1.1]} />
+            </mesh>
+            {[0, 1, 2, 3].map(i => (
+              <mesh
+                key={i}
+                material={paint.dark}
+                position={[
+                  Math.cos(i * QUARTER_TURN) * 0.55,
+                  0.2,
+                  Math.sin(i * QUARTER_TURN) * 0.55
+                ]}
+              >
+                <sphereGeometry args={[0.08, 8, 6]} />
+              </mesh>
+            ))}
+            <group ref={mainBlades}>
+              {spokes(rotor.blades).map((angle, i) => (
+                <group key={angle} rotation-y={angle}>
+                  <group
+                    ref={group => {
+                      droops.current[i] = group
+                    }}
+                  >
+                    <mesh castShadow material={built.mainBlade} geometry={built.blade} />
+                  </group>
+                </group>
+              ))}
+            </group>
+          </group>
+          <group ref={mainDisc}>
+            <mesh material={built.mainDisc} rotation-x={-QUARTER_TURN}>
+              <ringGeometry args={[0.45, rotor.radius, 48]} />
+            </mesh>
+          </group>
+        </group>
+      </Part>
+
+      <Part airframe={airframe} name="rightWing">
+        <mesh castShadow material={paint.body} geometry={built.deck} />
+        {/* The two engines either side of the transmission, exhausts turned outward */}
+        {[-1, 1].map(side => (
+          <group key={side}>
+            <mesh
+              castShadow
+              material={paint.accent}
+              position={[side * 0.82, 1.18, -0.3]}
+              rotation-x={QUARTER_TURN}
+            >
+              <cylinderGeometry args={[0.33, 0.38, 3.2, 16]} />
+            </mesh>
+            <mesh material={paint.dark} position={[side * 0.82, 1.18, -1.91]} rotation-y={Math.PI}>
+              <circleGeometry args={[0.31, 16]} />
+            </mesh>
+            <Strut
+              from={[side * 0.82, 1.18, 1.1]}
+              to={[side * 1.17, 1.2, 1.75]}
+              radius={0.2}
+              material={paint.dark}
+            />
+          </group>
+        ))}
+      </Part>
+
+      <Part airframe={airframe} name="tail">
+        <mesh castShadow material={paint.body} geometry={built.boom} />
+        <mesh castShadow material={paint.body} geometry={built.pylon} />
+        <mesh
+          castShadow
+          material={paint.body}
+          position={[0, 0.22, 0]}
+          geometry={built.stabilator}
+        />
+        <group position={rotor.tailHub} rotation-z={TAIL_CANT}>
+          {/* Gearbox fairing out from the pylon to the hub */}
+          <mesh castShadow material={paint.body} position={[-0.2, 0, 0]} rotation-z={QUARTER_TURN}>
+            <cylinderGeometry args={[0.15, 0.18, 0.4, 12]} />
+          </mesh>
+          <group ref={tailRotor}>
+            <mesh material={paint.dark} position={[0.05, 0, 0]} rotation-z={QUARTER_TURN}>
+              <cylinderGeometry args={[0.12, 0.12, 0.2, 10]} />
+            </mesh>
+            <group ref={tailBlades}>
+              {spokes(rotor.tailBlades).map(angle => (
+                <group key={angle} rotation-x={angle}>
+                  <mesh
+                    castShadow
+                    material={built.tailBlade}
+                    position={[0.05, 0.15 + tailBladeLength / 2, 0]}
+                  >
+                    <boxGeometry args={[0.04, tailBladeLength, 0.25]} />
+                  </mesh>
+                </group>
+              ))}
+            </group>
+          </group>
+          <group ref={tailDisc}>
+            <mesh material={built.tailDisc} position={[0.05, 0, 0]} rotation-y={QUARTER_TURN}>
+              <circleGeometry args={[rotor.tailRadius, 32]} />
+            </mesh>
+          </group>
+        </group>
+        {/* Tail wheel on a long strut under the boom, in a fork */}
+        <Strut
+          from={[0, -0.25, tailWheel.z - 0.55]}
+          to={[0, tailAxle + 0.35, tailWheel.z - 0.05]}
+          radius={0.07}
+          material={paint.dark}
+        />
+        <mesh material={paint.dark} position={[0, tailAxle + 0.35, tailWheel.z - 0.05]}>
+          <boxGeometry args={[0.3, 0.06, 0.14]} />
+        </mesh>
+        {[-0.12, 0.12].map(x => (
+          <Strut
+            key={x}
+            from={[x, tailAxle + 0.35, tailWheel.z - 0.05]}
+            to={[x, tailAxle, tailWheel.z]}
+            radius={0.03}
+            material={paint.dark}
+          />
+        ))}
+        <Wheel position={[0, tailAxle, tailWheel.z]} radius={TAIL_TYRE} material={paint.dark} />
+        {beacon(0, BLACK_HAWK_LIGHTS.top)}
+      </Part>
+    </group>
+  )
+}
+
 const TRIM = new MeshStandardMaterial({ color: '#14171a', roughness: 0.9 })
 
 /**
@@ -2842,6 +3324,28 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
             <mesh material={TRIM} position={[-eye.x, 0.45, -0.3]}>
               <boxGeometry args={[3.2, 0.08, 1.4]} />
             </mesh>
+          </>
+        )}
+        {kind === 'helicopter' && (
+          <>
+            {/* Posts at the middle and the sides of the sloping windscreen */}
+            {[-eye.x, -eye.x - 1, -eye.x + 1].map(x => (
+              <mesh key={x} material={TRIM} position={[x, -0.02, -0.72]} rotation-x={0.95}>
+                <boxGeometry args={[x === -eye.x ? 0.022 : 0.03, 1.15, 0.022]} />
+              </mesh>
+            ))}
+            {/* Roof bow above the windscreen, the overhead console, and the door frame beside you */}
+            <mesh material={TRIM} position={[-eye.x, 0.36, -0.27]}>
+              <boxGeometry args={[2.3, 0.08, 0.08]} />
+            </mesh>
+            <mesh material={TRIM} position={[-eye.x, 0.42, 0.2]}>
+              <boxGeometry args={[0.36, 0.1, 0.9]} />
+            </mesh>
+            {[-eye.x - 1.12, -eye.x + 1.12].map(x => (
+              <mesh key={x} material={TRIM} position={[x, -0.05, -0.12]}>
+                <boxGeometry args={[0.08, 1, 0.08]} />
+              </mesh>
+            ))}
           </>
         )}
         {kind === 'mustang' && (

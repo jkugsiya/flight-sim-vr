@@ -6,6 +6,7 @@ import type { AircraftSpec } from '../sim/aircraft'
 import { fromStrip, heightAt } from '../world/island'
 import { seededRandom } from '../world/noise'
 import { CITY_PLANS, HOUSES, ROADS } from '../world/scenery'
+import { BLACK_HAWK_LIGHTS } from './Aircraft'
 import { nightUniform } from './atmosphere'
 import { type Light, lightMaterial, pointsGeometry, type Rgb } from './lightPoints'
 
@@ -70,6 +71,8 @@ export function TownLights() {
 type LightLayout = { left: Vector3; right: Vector3; tail: Vector3; top: Vector3 }
 
 function playerLayout(spec: AircraftSpec): LightLayout {
+  // A helicopter's wingtips are its rotor tips, so its lights sit on the airframe instead
+  if (spec.shape.type === 'helicopter') return BLACK_HAWK_LIGHTS
   const [left, right] = spec.wingtips
   const tailZ = Math.max(...spec.hullPoints.map(point => point.position.z))
   const topY = Math.max(...spec.hullPoints.map(point => point.position.y))

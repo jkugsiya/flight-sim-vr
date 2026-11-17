@@ -108,7 +108,13 @@ export function findCollision(
         for (const obstacle of bucket) {
           // A building a bomb brought down is rubble now. Its widest blocks reach past
           // their centre, so the flattened area counts a little wider.
-          if (obstacle.kind === 'building' && ruins?.covers(obstacle.x, obstacle.z, 40)) continue
+          if (
+            obstacle.kind === 'building' &&
+            !obstacle.bombproof &&
+            ruins?.covers(obstacle.x, obstacle.z, 40)
+          ) {
+            continue
+          }
           if (
             insideCylinder(obstacle.x, obstacle.z, obstacle.base, obstacle.top, obstacle.radius)
           ) {

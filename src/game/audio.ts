@@ -154,8 +154,18 @@ export class Sound {
     // The fastest engine sets the pitch, so one running engine is heard among stopped ones
     let rpm = 0
     for (const state of sim.engines) rpm = Math.max(rpm, state.rpm)
-    const turning = flying && (jet ? rpm > 15 : rpm > 50)
-    if (jet) {
+    const { rotor } = sim.spec
+    const turning = flying && (rotor ? sim.rotorSpeed > 0.05 : jet ? rpm > 15 : rpm > 50)
+    if (rotor) {
+      // Each blade slaps the air once a turn, about 17 times a second at full rotor speed
+      const slap = Math.max(1, (sim.rotorSpeed * rotor.speed * rotor.blades) / (Math.PI * 2))
+      engine.type = 'sawtooth'
+      engine.frequency.setTargetAtTime(slap, now, 0.05)
+      engineSub.frequency.setTargetAtTime(slap / 2, now, 0.05)
+      engineFilter.frequency.setTargetAtTime(200 + 250 * sim.rotorSpeed, now, 0.05)
+      const thump = Math.min(1, sim.rotorSpeed) * (0.05 + 0.08 * sim.enginePower)
+      engineGain?.gain.setTargetAtTime(turning ? thump : 0, now, 0.1)
+    } else if (jet) {
       // A turbine whines far above the low rumble of its exhaust
       engine.type = 'sine'
       engine.frequency.setTargetAtTime(700 + rpm * 24, now, 0.1)
@@ -230,6 +240,54 @@ export class Sound {
     thump.connect(gain).connect(master)
     thump.start(now)
     thump.stop(now + 1)
+  }
+
+  /**
+   * Thunder from a lightning flash `distance` metres away. It starts once the sound has
+   * travelled that far at 343 m/s. A close strike cracks, then rumbles; a far one only rolls,
+   * softer and lower.
+   */
+  thunder(distance: number) {
+    const { context, master, noise } = this
+    if (!context || !master || !noise) return
+    const start = context.currentTime + distance / 343
+    const near = Math.max(0, 1 - distance / 12_000)
+    const volume = 0.12 + 0.6 * near * near
+    if (near > 0.6) this.roll(start, 'bandpass', 2600, volume * 0.8, 0.01, 0.35)
+    // Overlapping rolls make the rumble swell and fade unevenly, longer the farther away
+    let at = start
+    for (let i = 0; i < 4; i++) {
+      const pitch = (90 + 260 * near) * (0.75 + Math.random() * 0.5)
+      const loud = volume * (i === 0 ? 1 : 0.5 + Math.random() * 0.5)
+      this.roll(at, 'lowpass', pitch, loud, 0.15 + Math.random() * 0.3, 2 + Math.random() * 3)
+      at += (0.3 + Math.random() * 0.8) * (1.6 - near)
+    }
+  }
+
+  /** Plays filtered noise from `at` seconds that swells for `attack` seconds, then fades. */
+  private roll(
+    at: number,
+    type: BiquadFilterType,
+    hz: number,
+    volume: number,
+    attack: number,
+    seconds: number
+  ) {
+    const { context, master, noise } = this
+    if (!context || !master || !noise) return
+    const source = context.createBufferSource()
+    source.buffer = noise
+    source.loop = true
+    const filter = context.createBiquadFilter()
+    filter.type = type
+    filter.frequency.value = hz
+    const gain = context.createGain()
+    gain.gain.setValueAtTime(0.0001, at)
+    gain.gain.exponentialRampToValueAtTime(volume, at + attack)
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + seconds)
+    source.connect(filter).connect(gain).connect(master)
+    source.start(at, Math.random())
+    source.stop(at + seconds)
   }
 
   /** Plays filtered noise that fades out, sweeping the filter from one frequency to another. */

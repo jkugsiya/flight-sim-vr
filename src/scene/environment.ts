@@ -136,16 +136,32 @@ const densityFor = (metres: number) => 1.9 / metres
 const grey = new Color()
 const cloud = new Color()
 const luminance = (color: Color) => color.r * 0.3 + color.g * 0.55 + color.b * 0.15
+// Storm light has a grey-green cast
+const STORM_TINT = new Color(0.86, 0.97, 0.9)
+// The cold blue-white of a lightning flash
+const FLASH = new Color(0.82, 0.86, 1)
+/** Gives a grey the storm's green cast in Storm weather. */
+const tinted = (color: Color, storm: boolean) => (storm ? color.multiply(STORM_TINT) : color)
+// Inside a storm cell the cloud is dark and dense
+const CELL_GREY = new Color(0.11, 0.125, 0.12)
 
 /**
  * Sets the shared sky, haze, and light values for the time of day, the weather, and the
  * camera height: under an overcast deck the light goes dull, inside it the view whites out,
- * and above it the sun shines again.
+ * and above it the sun shines again. In a storm, `flash` (0 to about 1) is the lightning
+ * lighting the scene, and `cell` (0 to 1) how deep the camera is inside a storm cell.
  */
-export function updateEnvironment(time: TimeOfDay, weather: Weather, eyeHeight: number) {
+export function updateEnvironment(
+  time: TimeOfDay,
+  weather: Weather,
+  eyeHeight: number,
+  flash = 0,
+  cell = 0
+) {
   const day = PALETTES[time]
   const conditions = WEATHER[weather]
   const deck = conditions.deck
+  const storm = weather === 'storm'
   // How far into or under the deck the camera is, with soft edges so nothing pops
   const under = deck ? 1 - smoothstep(deck.top - 40, deck.top + 40, eyeHeight) : 0
   const inside = deck
@@ -153,23 +169,24 @@ export function updateEnvironment(time: TimeOfDay, weather: Weather, eyeHeight: 
       (1 - smoothstep(deck.top - 40, deck.top + 40, eyeHeight))
     : 0
   const misty = weather === 'fog' ? 1 : 0
-  const dull = Math.max(under, misty)
+  const dull = Math.max(under, misty, cell)
 
   SUN_DIRECTION.copy(day.sun)
   sunColor.copy(day.sunColor)
   sunGlow.copy(day.glow).multiplyScalar(1 - dull)
   nightUniform.value = day.night
-  clearSkyUniform.value = 1 - misty
+  clearSkyUniform.value = 1 - Math.max(misty, cell)
 
-  // Overcast skies turn grey at the brightness of the clear sky, darker in rain
-  const gloom = weather === 'rain' ? 0.62 : weather === 'fog' ? 0.95 : 0.8
-  grey.setScalar(luminance(day.horizon) * gloom)
+  // Overcast skies turn grey at the brightness of the clear sky, darker in rain and storms
+  const gloom = storm ? 0.42 : weather === 'rain' ? 0.62 : weather === 'fog' ? 0.95 : 0.8
+  tinted(grey.setScalar(luminance(day.horizon) * gloom), storm)
   horizon.copy(day.horizon).lerp(grey, dull)
-  grey.setScalar(luminance(day.zenith) * gloom * 1.1)
+  tinted(grey.setScalar(luminance(day.zenith) * gloom * 1.1), storm)
   zenith.copy(day.zenith).lerp(grey, dull)
-  // Inside the cloud everything fades to the cloud's own colour
-  cloud.setScalar(Math.min(0.92, luminance(day.horizon) * 1.05))
-  horizon.lerp(cloud, inside)
+  // Inside the cloud everything fades to the cloud's own colour, darker in a storm
+  cloud.setScalar(Math.min(0.92, luminance(day.horizon) * (storm ? 0.55 : 1.05)))
+  horizon.lerp(tinted(cloud, storm), inside)
+  horizon.lerp(cloud.copy(CELL_GREY).multiplyScalar(day.light + 0.1), cell)
 
   let density = FOG_DENSITY
   if (weather === 'fog') density = densityFor(conditions.visibility)
@@ -178,19 +195,32 @@ export function updateEnvironment(time: TimeOfDay, weather: Weather, eyeHeight: 
     density = below * under + FOG_DENSITY * (1 - under)
     density += (densityFor(70) - density) * inside
   }
+  // Rain and cloud inside a storm cell close in to a few hundred metres
+  density += (densityFor(450) - density) * cell
   fogUniform.value = density
 
-  const shade = 1 - 0.85 * dull
+  // A storm keeps less of the daylight than an ordinary overcast
+  const shade = 1 - (storm ? 0.93 : 0.85) * dull
   environment.sunIntensity = day.sunIntensity * shade
-  environment.sky.copy(day.sky).lerp(grey.setScalar(luminance(day.sky)), dull)
+  environment.sky.copy(day.sky).lerp(tinted(grey.setScalar(luminance(day.sky)), storm), dull)
   environment.ground.copy(day.ground)
-  environment.ambient = day.ambient * (1 - 0.25 * dull)
+  environment.ambient = day.ambient * (1 - (storm ? 0.45 : 0.25) * dull)
   environment.overcast = dull
-  environment.inCloud = inside
+  environment.inCloud = Math.max(inside, cell)
   environment.rain = conditions.rain
   environment.raining = conditions.rain > 0 && (!deck || eyeHeight < deck.top)
 
-  lightLevel.value = day.light * (1 - 0.3 * dull)
+  lightLevel.value = day.light * (1 - (storm ? 0.55 : 0.3) * dull)
   cloudLight.value.copy(day.sunColor).lerp(grey.setScalar(1), 0.55 + 0.35 * dull)
-  cloudLight.value.multiplyScalar(day.light * (1 - 0.25 * dull))
+  cloudLight.value.multiplyScalar(day.light * (1 - (storm ? 0.5 : 0.25) * dull))
+
+  if (flash <= 0.001) return
+  // Lightning lights the sky, the cloud, and everything under it for a moment
+  const burst = Math.min(flash, 1.2)
+  horizon.lerp(FLASH, Math.min(1, burst * 0.7))
+  zenith.lerp(FLASH, Math.min(1, burst * 0.55))
+  environment.sky.lerp(FLASH, Math.min(1, burst))
+  environment.ambient += burst * 2.6
+  lightLevel.value += burst * 0.7
+  cloudLight.value.lerp(FLASH, Math.min(1, burst * 0.8))
 }

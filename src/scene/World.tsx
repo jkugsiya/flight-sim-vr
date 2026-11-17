@@ -341,7 +341,7 @@ export function Terrain() {
     material.needsUpdate = true
   }, [material, detailed])
   // Rain soaks the ground: darker, with a little sheen
-  const wet = useGame(state => state.weather === 'rain')
+  const wet = useGame(state => state.weather === 'rain' || state.weather === 'storm')
   useEffect(() => {
     material.color.setScalar(wet ? 0.72 : 1)
     material.roughness = wet ? 0.7 : 0.96
@@ -445,7 +445,9 @@ export function Sea() {
     material.uniforms.time.value = clock.elapsedTime
   })
   return (
-    <mesh rotation-x={-Math.PI / 2} material={material} renderOrder={1}>
+    // First of the see-through things after the sky. Gates, flames, and rings that leave no
+    // depth behind draw after it, or the sea would paint over every part with water behind it.
+    <mesh rotation-x={-Math.PI / 2} material={material} renderOrder={-0.5}>
       <planeGeometry args={[400_000, 400_000]} />
     </mesh>
   )

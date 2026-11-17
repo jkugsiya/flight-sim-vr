@@ -47,6 +47,13 @@ export type PistonEngine = {
   criticalAltitude?: number
 }
 
+/** Turbine driving a helicopter rotor through a gearbox. A governor holds the rotor speed. */
+export type TurboshaftEngine = {
+  type: 'turboshaft'
+  /** Shaft power in watts at sea level. */
+  shaftPower: number
+}
+
 export type JetEngine = {
   type: 'jet'
   /** Total thrust in newtons at idle, at full dry power, and with afterburners lit. */
@@ -140,6 +147,51 @@ export type Shape =
   | BomberShape
   | AirlinerShape
   | ShuttleShape
+  | HelicopterShape
+
+/** A helicopter. Its rotors come from `AircraftSpec.rotor`. */
+export type HelicopterShape = {
+  type: 'helicopter'
+  paint: string
+  accent: string
+}
+
+/**
+ * Main and tail rotor of a helicopter. The main rotor lifts and steers the aircraft; the
+ * flight model reads the blade numbers, and the model draws the blades.
+ */
+export type RotorSpec = {
+  /** Main rotor radius in metres, blade count, and blade width in metres. */
+  radius: number
+  blades: number
+  chord: number
+  /** Spin in rad/s at 100% rotor speed. */
+  speed: number
+  /** Lift slope of the blades per radian, and their drag coefficient. */
+  liftSlope: number
+  profileDrag: number
+  /** Blade pitch in radians with the collective lever fully down and fully up. */
+  collective: [number, number]
+  /** Spin inertia of the main rotor in kg·m². It keeps the rotor turning for a few seconds. */
+  inertia: number
+  /** Centre of the main rotor hub, in body axes. */
+  hub: Vector3
+  /** Tail rotor centre in body axes, radius, and blade count. It spins on the body's x axis. */
+  tailHub: Vector3
+  tailRadius: number
+  tailBlades: number
+  /** Flat plate drag areas of the fuselage in m², for air from ahead, the side, and above. */
+  drag: { front: number; side: number; top: number }
+  /**
+   * The stability system's limits: the steepest pitch and bank in radians the cyclic asks
+   * for, and the fastest turn in place in rad/s the pedals ask for.
+   */
+  maxPitch: number
+  maxBank: number
+  maxYawRate: number
+  /** Ground speed in m/s the trim holds hands off at full nose-down trim. */
+  trimSpeed: number
+}
 
 /**
  * The Space Shuttle orbiter. The outline runs from the nose around the right side of the
@@ -241,7 +293,9 @@ export type AircraftSpec = {
   cnRudder: number
   cnAileron: number
 
-  engine: PistonEngine | JetEngine
+  engine: PistonEngine | JetEngine | TurboshaftEngine
+  /** Helicopters only: the rotor that replaces the wing and the propulsive thrust. */
+  rotor?: RotorSpec
   engineCount: number
   /** Seconds for the engines to follow the throttle, and for each one to start. */
   spoolSeconds: number
@@ -2101,6 +2155,194 @@ function shuttle(): AircraftSpec {
 
 const SHUTTLE = shuttle()
 
+/**
+ * Sikorsky UH-60 Black Hawk. Body axes put the centre of gravity at the origin; the wheels
+ * sit 1.95 m below it. The real aircraft has a stability system that holds attitude and
+ * heading, which the flight model gives it as well.
+ */
+function blackHawk(): AircraftSpec {
+  const hub = new Vector3(0, 1.85, -0.2)
+  const radius = 8.18
+  const [mainSpring, mainDamper] = spring(24_400, 0.05)
+  const [tailSpring, tailDamper] = spring(19_900, 0.05)
+  return {
+    id: 'uh60',
+    name: 'Sikorsky UH-60 Black Hawk',
+    label: 'Black Hawk',
+    role: 'Twin-engine utility helicopter',
+    description:
+      'Hovers, lands on rooftops and ship decks, and carries a stability system that holds it level when you let go.',
+    stats: { power: '2 × 1,890 shp', topSpeed: 193, stallSpeed: 0, climb: 1650 },
+
+    // With 30% fuel, two pilots, and a light load
+    mass: 7000,
+    inertiaPitch: 52_000,
+    inertiaYaw: 50_000,
+    inertiaRoll: 6300,
+    // The wing fields stay for code that reads them; a helicopter's lift comes from the rotor
+    wingArea: 1,
+    wingSpan: radius * 2,
+    chord: 0.53,
+
+    cl0: 0,
+    clAlpha: 0,
+    flapLift: 0,
+    stallAlpha: 1,
+    negativeStallAlpha: 1,
+    flapStallShift: 0,
+    stallSharpness: 10,
+    stallHysteresis: 0,
+    stallWarningMargin: 0,
+
+    cd0: 0,
+    gearDrag: 0,
+    flapDrag: 0,
+    inducedDrag: 0,
+    sideDrag: 0,
+    sideForce: 0,
+    waveDrag: 0,
+    speedBrakeDrag: 0,
+    liftDump: 0,
+
+    cm0: 0,
+    cmAlpha: 0,
+    cmPitchRate: 0,
+    cmElevator: 0,
+    cmTrim: 0,
+    cmStall: 0,
+
+    clBeta: 0,
+    clRollRate: 0,
+    clYawRate: 0,
+    clAileron: 0,
+    stallRollBias: 0,
+
+    cnBeta: 0,
+    cnYawRate: 0,
+    cnRollRate: 0,
+    cnRudder: 0,
+    cnAileron: 0,
+
+    engine: { type: 'turboshaft', shaftPower: 1_300_000 },
+    rotor: {
+      radius,
+      blades: 4,
+      chord: 0.53,
+      speed: 27,
+      liftSlope: 5.73,
+      profileDrag: 0.011,
+      collective: [0, 0.28],
+      inertia: 11_000,
+      hub,
+      tailHub: new Vector3(0.5, 2, 9.6),
+      tailRadius: 1.68,
+      tailBlades: 4,
+      drag: { front: 2.4, side: 10, top: 8 },
+      maxPitch: 0.35,
+      maxBank: 0.6,
+      maxYawRate: 0.6,
+      trimSpeed: 160
+    },
+    engineCount: 2,
+    spoolSeconds: 1,
+    starterSeconds: 8,
+    // 360 US gallons of JP-8
+    fuelCapacity: 1100,
+    fuelDump: false,
+    fuelBurnIdle: 0.02,
+    fuelBurnFull: 0.2,
+    fuelUnit: { label: 'kg', perKg: 1 },
+
+    flapLabels: ['Up'],
+    flapName: 'Flaps',
+    flapSpeeds: [],
+    gearSpeed: null,
+    flapSecondsPerNotch: 1,
+    retractableGear: false,
+    gearSeconds: 1,
+    reverseThrust: 0,
+    flyByWire: null,
+    autobrake: false,
+
+    // The stability system gives full cyclic travel at every speed
+    maneuverSpeed: 193 * KNOT,
+    neverExceedSpeed: 193 * KNOT,
+    maxTouchdownSink: 3.5,
+    gearTravel: 0.4,
+    brakeFriction: 0.6,
+    sideFriction: 0.8,
+    maxSteerAngle: 0,
+
+    // The tail wheel swivels; the tail rotor and the brakes steer on the ground
+    contactPoints: [
+      {
+        position: new Vector3(0, -1.95, 6.4),
+        stiffness: tailSpring,
+        damping: tailDamper,
+        gear: true,
+        braked: false,
+        steered: false,
+        scrape: 0
+      },
+      wheel(-1.35, -1.95, -2.6, mainSpring, mainDamper, 'main'),
+      wheel(1.35, -1.95, -2.6, mainSpring, mainDamper, 'main')
+    ],
+    // The main rotor tips strike the ground in a steep bank on the ground
+    hullPoints: [
+      hull(0, -1.15, -7.3, true),
+      hull(0, -1.3, -1, true),
+      hull(-radius, hub.y, hub.z),
+      hull(radius, hub.y, hub.z),
+      hull(0, hub.y, hub.z - radius),
+      hull(0.5, 0.35, 9.6),
+      hull(0, 2.4, 9.8)
+    ],
+    restHeight: 1.9,
+    wingtips: [new Vector3(-radius, hub.y, hub.z), new Vector3(radius, hub.y, hub.z)],
+    // Cabin, cockpit nose, main rotor, engine deck, and tail boom
+    breakup: [
+      part(0, -0.2, -1, 1.2),
+      part(0, -0.3, -6, 0.6),
+      part(hub.x, hub.y, hub.z, 1),
+      part(0, 1, -0.5, 0.6),
+      part(0, 0.6, 7.5, 0.6)
+    ],
+
+    rotateSpeed: 0,
+    climbSpeed: 80,
+    approachSpeed: 60,
+    cruiseSpeed: 70,
+    runwayNeeded: 0,
+    gauges: {
+      airspeed: {
+        min: 0,
+        max: 200,
+        labelEvery: 20,
+        tickEvery: 10,
+        flapRange: null,
+        normalRange: [0, 150],
+        cautionRange: [150, 193]
+      },
+      climb: 2000,
+      power: {
+        caption: 'TRQ %',
+        max: 120,
+        labelEvery: 20,
+        tickEvery: 5,
+        labelScale: 1,
+        normalRange: [0, 100],
+        redline: 100
+      }
+    },
+    panel: 'dials',
+    // The pilot sits on the right in a Black Hawk
+    camera: { distance: 26, height: 7, eye: new Vector3(0.55, 0.45, -5.4) },
+    shape: { type: 'helicopter', paint: '#4a5130', accent: '#2c3020' }
+  }
+}
+
+const BLACK_HAWK = blackHawk()
+
 /** Every aircraft the player can fly, in picker order. */
 export const HANGAR: AircraftSpec[] = [
   CESSNA,
@@ -2113,7 +2355,8 @@ export const HANGAR: AircraftSpec[] = [
   F16,
   F35,
   B2,
-  SHUTTLE
+  SHUTTLE,
+  BLACK_HAWK
 ]
 export const DEFAULT_AIRCRAFT = CESSNA
 
@@ -2124,6 +2367,8 @@ export const isGlider = (spec: AircraftSpec) =>
 /** Distance of each engine from the centreline, numbered from the left wingtip. */
 export function engineArms(spec: AircraftSpec) {
   const { shape } = spec
+  // A helicopter's engines sit side by side on the cabin roof
+  if (shape.type === 'helicopter') return spec.engineCount > 1 ? [-0.6, 0.6] : [0]
   if (shape.type !== 'airliner' && shape.type !== 'bomber') return [0]
   const right = shape.engines.map(([x]) => x).sort((a, b) => a - b)
   return [...right.map(x => -x).reverse(), ...right]

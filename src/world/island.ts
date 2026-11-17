@@ -555,12 +555,313 @@ export function isPaved(x: number, z: number) {
   return false
 }
 
+/**
+ * A solid box whose flat top is ground you can land on, such as a roof or a ship's deck.
+ * Heights are metres above sea level. `part` tells the renderer what to draw.
+ */
+export type Deck = Strip & {
+  base: number
+  top: number
+  part: 'tower' | 'wing' | 'hull' | 'bow' | 'bridge' | 'helideck' | 'deck' | 'module' | 'quarters'
+}
+
+/** Upright cylinder that is solid but no place to land, such as a platform leg or a mast. */
+export type Post = {
+  x: number
+  z: number
+  base: number
+  top: number
+  radius: number
+  part: 'leg' | 'mast' | 'derrick' | 'flare'
+}
+
+/**
+ * A building, ship, or platform made of decks and posts. `heading` is in degrees from north
+ * and sets the axes its parts are laid out on. Every part lies within `reach` of its centre.
+ */
+export type Structure = {
+  kind: 'hospital' | 'ship' | 'platform'
+  name: string
+  x: number
+  z: number
+  heading: number
+  reach: number
+  decks: Deck[]
+  posts: Post[]
+}
+
+/** Adds decks and posts to a structure by their distances along and across its axes. */
+function layOut(frame: Omit<Structure, 'decks' | 'posts'>) {
+  const axes: Strip = { ...frame, length: 0, width: 0 }
+  const structure: Structure = { ...frame, decks: [], posts: [] }
+  return {
+    structure,
+    deck(
+      along: number,
+      across: number,
+      size: [length: number, width: number],
+      base: number,
+      top: number,
+      part: Deck['part']
+    ) {
+      const [length, width] = size
+      structure.decks.push({
+        ...fromStrip(axes, along, across),
+        heading: frame.heading,
+        length,
+        width,
+        base,
+        top,
+        part
+      })
+    },
+    post(
+      along: number,
+      across: number,
+      radius: number,
+      base: number,
+      top: number,
+      part: Post['part']
+    ) {
+      structure.posts.push({ ...fromStrip(axes, along, across), base, top, radius, part })
+    }
+  }
+}
+
+const HOSPITAL_CITY = CITIES.find(city => city.name === 'Coral Bay') ?? CITIES[0]
+
+/**
+ * The hospital grounds: one city block on the seaward edge of Coral Bay, among low houses,
+ * 400 m from the shore. The city leaves the block empty for the hospital.
+ */
+export const HOSPITAL_GROUNDS: Strip = {
+  ...fromStrip(HOSPITAL_CITY, 1147, -394),
+  heading: HOSPITAL_CITY.heading,
+  length: 86,
+  width: 66
+}
+
+/** Ten-storey hospital tower with a helipad on its roof, and a four-storey wing beside it. */
+function buildHospital() {
+  const { x, z, heading } = HOSPITAL_GROUNDS
+  const site = layOut({ kind: 'hospital', name: 'Coral Bay Hospital', x, z, heading, reach: 50 })
+  // Stand on the lowest corner of the grounds, so no wall floats above a dip
+  let base = heightAt(x, z)
+  for (const [along, across] of [
+    [-1, -1],
+    [-1, 1],
+    [1, -1],
+    [1, 1]
+  ]) {
+    const corner = fromStrip(HOSPITAL_GROUNDS, along * 43, across * 33)
+    base = Math.min(base, heightAt(corner.x, corner.z))
+  }
+  base -= 0.5
+  site.deck(-9, -8, [52, 40], base, base + 36, 'tower')
+  site.deck(28, 1, [22, 54], base, base + 14, 'wing')
+  return site.structure
+}
+
+/** Rescue ship at anchor 2.6 km off Coral Bay, its helideck raised over the stern. */
+function buildShip() {
+  const site = layOut({
+    kind: 'ship',
+    name: 'Rescue Ship Petrel',
+    x: 3400,
+    z: -11_000,
+    heading: 300,
+    reach: 50
+  })
+  // The bow points along the heading. The hull narrows to a point over its last 16 m.
+  site.deck(-8, 0, [76, 16], 0, 7, 'hull')
+  site.deck(38, 0, [16, 9], 0, 7, 'bow')
+  site.deck(17, 0, [22, 13], 7, 17, 'bridge')
+  site.deck(-33, 0, [26, 20], 7, 12, 'helideck')
+  site.post(20, 0, 0.8, 17, 27, 'mast')
+  return site.structure
+}
+
+/** Gas platform on four legs 11 km out to sea, with its helideck over the living quarters. */
+function buildPlatform() {
+  const site = layOut({
+    kind: 'platform',
+    name: 'Coral Bank Platform',
+    x: 3500,
+    z: -20_000,
+    heading: 30,
+    reach: 45
+  })
+  site.deck(0, 0, [40, 32], 22, 26, 'deck')
+  site.deck(8, -5, [20, 18], 26, 34, 'module')
+  site.deck(-12, 0, [12, 24], 26, 34, 'quarters')
+  // The helideck reaches 15 m past the end of the main deck, clear of the derrick and flare
+  site.deck(-22, 0, [26, 26], 34, 37, 'helideck')
+  for (const along of [-15, 15]) {
+    for (const across of [-12, 12]) site.post(along, across, 1.8, 0, 22, 'leg')
+  }
+  site.post(12, 10, 4.5, 26, 62, 'derrick')
+  site.post(17, -13, 1.2, 26, 56, 'flare')
+  return site.structure
+}
+
+export const HOSPITAL = buildHospital()
+export const RESCUE_SHIP = buildShip()
+export const PLATFORM = buildPlatform()
+/** Structures whose decks are ground for the flight model. */
+export const STRUCTURES = [HOSPITAL, RESCUE_SHIP, PLATFORM]
+
+/** Each structure's decks with their axes worked out ahead, for lookups every physics step. */
+const DECK_SITES = STRUCTURES.map(structure => ({
+  x: structure.x,
+  z: structure.z,
+  reachSquared: structure.reach ** 2,
+  decks: structure.decks.map(deck => ({
+    x: deck.x,
+    z: deck.z,
+    top: deck.top,
+    sin: Math.sin(radians(deck.heading)),
+    cos: Math.cos(radians(deck.heading)),
+    halfLength: deck.length / 2,
+    halfWidth: deck.width / 2
+  }))
+}))
+
+/** Height of the highest deck over a point in metres, or -Infinity away from every structure. */
+export function deckTopAt(x: number, z: number) {
+  let top = Number.NEGATIVE_INFINITY
+  for (const site of DECK_SITES) {
+    if ((x - site.x) ** 2 + (z - site.z) ** 2 > site.reachSquared) continue
+    for (const deck of site.decks) {
+      if (deck.top <= top) continue
+      const dx = x - deck.x
+      const dz = z - deck.z
+      if (Math.abs(dx * deck.sin - dz * deck.cos) > deck.halfLength) continue
+      if (Math.abs(dx * deck.cos + dz * deck.sin) > deck.halfWidth) continue
+      top = deck.top
+    }
+  }
+  return top
+}
+
+export type HelipadId = 'hospital' | 'ship' | 'platform' | `airport-${string}`
+
+/** A marked landing pad. Missions find one by `id` with `helipad`. */
+export type Helipad = {
+  id: HelipadId
+  name: string
+  kind: 'rooftop' | 'ship' | 'platform' | 'ground'
+  /** Centre of the pad. */
+  x: number
+  z: number
+  /** Height of the pad surface above sea level, in metres. */
+  elevation: number
+  /** Direction the H faces, in degrees from north. The pad's square and the H line up with it. */
+  heading: number
+  /** Half the side of the marked square, in metres. The painted circle is two thirds as wide. */
+  radius: number
+  /** Code of the airport a ground pad stands at. */
+  airport?: string
+}
+
+/** Pad on a structure's helideck or tower roof, centred on that deck. */
+function deckPad(
+  id: HelipadId,
+  structure: Structure,
+  kind: Helipad['kind'],
+  radius: number
+): Helipad {
+  const deck = structure.decks.find(
+    candidate => candidate.part === 'helideck' || candidate.part === 'tower'
+  )
+  if (!deck) throw new Error(`Helipad ${id} needs a deck on ${structure.name}, which has none`)
+  return {
+    id,
+    name: structure.name,
+    kind,
+    x: deck.x,
+    z: deck.z,
+    elevation: deck.top,
+    heading: structure.heading,
+    radius
+  }
+}
+
+// Gap between the end of the apron and the pad, by kind of airport
+const PAD_GAP = { international: 100, regional: 70, airstrip: 50 }
+const PAD_RADIUS = { international: 15, regional: 15, airstrip: 12 }
+
+/**
+ * Ground pad on the grass past the far end of the apron from the hangars, level with the
+ * middle of the apron, so it keeps clear of the runways, taxiways, and parking stands.
+ */
+function airportPad(airport: Airport): Helipad {
+  const runway = airport.runways[0]
+  const layout = LAYOUTS[airport.kind]
+  // The apron stands on the same side as the middle of the airport grounds
+  const side = Math.sign(toStrip(runway, airport.grounds.x, airport.grounds.z).across)
+  const { x, z } = fromStrip(
+    runway,
+    -(layout.apron.half + PAD_GAP[airport.kind]),
+    (side * (layout.apron.from + layout.apron.to)) / 2
+  )
+  return {
+    id: `airport-${airport.code.toLowerCase()}`,
+    name: `${airport.name} Helipad`,
+    kind: 'ground',
+    x,
+    z,
+    elevation: heightAt(x, z),
+    heading: runway.heading,
+    radius: PAD_RADIUS[airport.kind],
+    airport: airport.code
+  }
+}
+
+/** Every helipad: the hospital roof, the rescue ship, the gas platform, and one per airport. */
+export const HELIPADS: Helipad[] = [
+  deckPad('hospital', HOSPITAL, 'rooftop', 13),
+  deckPad('ship', RESCUE_SHIP, 'ship', 10),
+  deckPad('platform', PLATFORM, 'platform', 13),
+  ...AIRPORTS.map(airportPad)
+]
+
+/** The helipad with this id. Throws for an id that names no pad. */
+export function helipad(id: HelipadId) {
+  const pad = HELIPADS.find(candidate => candidate.id === id)
+  if (!pad) throw new Error(`Helipad ${id} does not exist, so nothing can fly to it`)
+  return pad
+}
+
+const GROUND_PADS = HELIPADS.filter(pad => pad.kind === 'ground')
+
+/** True on the hard surface of a ground pad or anywhere on a structure's decks. */
+function onPad(x: number, z: number) {
+  if (deckTopAt(x, z) > Number.NEGATIVE_INFINITY) return true
+  for (const pad of GROUND_PADS) {
+    // The square turns with the pad, so its corners reach the radius times root two
+    const reach = pad.radius * Math.SQRT2
+    if (Math.abs(x - pad.x) > reach || Math.abs(z - pad.z) > reach) continue
+    const square = { ...pad, length: pad.radius * 2, width: pad.radius * 2 }
+    if (outside(square, x, z) === 0) return true
+  }
+  return false
+}
+
+/** Ground height for the flight model: the terrain, or the top of a deck standing over it. */
+function groundHeightAt(x: number, z: number) {
+  return Math.max(heightAt(x, z), deckTopAt(x, z))
+}
+
 export function surfaceAt(x: number, z: number): Surface {
-  if (isPaved(x, z)) return 'runway'
+  if (isPaved(x, z) || onPad(x, z)) return 'runway'
   return heightAt(x, z) < 0 ? 'water' : 'grass'
 }
 
-export const ISLAND_GROUND: Ground = { heightAt, surfaceAt }
+/**
+ * The ground the flight model lands on: the terrain plus the decks of the hospital, ship,
+ * and platform. Use plain `heightAt` for the terrain alone.
+ */
+export const ISLAND_GROUND: Ground = { heightAt: groundHeightAt, surfaceAt }
 
 /** Steepness of the terrain as rise over run. */
 export function slopeAt(x: number, z: number) {

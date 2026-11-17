@@ -32,6 +32,9 @@ export const LOCK_CONE = 0.26
 export const LOCK_RANGE = 9000
 // The seeker looks this far below the nose, in radians, as a missile's does
 export const LOCK_DOWN = 0.8
+// Metres a missile aims above its target per metre still to go, and at most
+const LOFT = 0.08
+const MAX_LOFT = 300
 // Missile top speed in m/s, how fast its motor reaches it, how sharply it turns in rad/s,
 // and the seconds it flies before it destroys itself
 const MISSILE_SPEED = 330
@@ -341,6 +344,10 @@ export class Bombs {
           position.set(aim.x, groundUnder(ground, aim), aim.z)
           return this.land(position, false)
         }
+        // Lofted: it aims above the target while far off, so a launch at low level clears
+        // the hills on the way in, then dives onto it
+        const across = Math.hypot(aim.x - position.x, aim.z - position.z)
+        aim.y += Math.min(MAX_LOFT, across * LOFT)
         const wanted = aim.sub(position).normalize()
         const angle = heading.angleTo(wanted)
         // Turn toward the target, at most the fins' rate this step

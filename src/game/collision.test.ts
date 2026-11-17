@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { DEFAULT_AIRCRAFT } from '../sim/aircraft'
 import { FlightSim } from '../sim/flight-sim'
-import { ISLAND_GROUND } from '../world/island'
+import { fromStrip, helipad, ISLAND_GROUND, RESCUE_SHIP } from '../world/island'
 import { balloonPosition, OBSTACLES, TREES } from '../world/scenery'
 import { findCollision } from './collision'
 import { Ruins } from './ruins'
@@ -50,4 +50,22 @@ test('a building a bomb brought down is no longer solid', () => {
   expect(findCollision(flyingAt(building.x, middle, building.z), 0, traffic, ruins)).toBe(
     'building'
   )
+})
+
+test('a raised helideck is ground to land on, and the ship under it is solid', () => {
+  const pad = helipad('ship')
+  const deck = RESCUE_SHIP.decks.find(candidate => candidate.part === 'helideck')
+  if (!deck) throw new Error('The rescue ship has no helideck to test against')
+  expect(ISLAND_GROUND.heightAt(pad.x, pad.z)).toBe(pad.elevation)
+  expect(ISLAND_GROUND.surfaceAt(pad.x, pad.z)).toBe('runway')
+  // Two metres past the side of the helideck is open sea
+  const beside = fromStrip(deck, 0, deck.width / 2 + 2)
+  expect(ISLAND_GROUND.heightAt(beside.x, beside.z)).toBeLessThan(0)
+  expect(ISLAND_GROUND.surfaceAt(beside.x, beside.z)).toBe('water')
+
+  const parked = new FlightSim(ISLAND_GROUND, DEFAULT_AIRCRAFT)
+  parked.placeOnGround(pad.x, pad.z, (RESCUE_SHIP.heading * Math.PI) / 180)
+  expect(parked.position.y).toBeGreaterThan(pad.elevation)
+  expect(findCollision(parked, 0, traffic)).toBeNull()
+  expect(findCollision(flyingAt(pad.x, pad.elevation - 4, pad.z), 0, traffic)).toBe('boat')
 })

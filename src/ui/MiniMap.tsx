@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { game } from '../game/game'
+import { game, useGame } from '../game/game'
+import { STORM_CELLS } from '../game/storm'
 import type { FlightSim } from '../sim/flight-sim'
-import { AIRPORTS, fromStrip, heightAt, WORLD_SIZE } from '../world/island'
+import { AIRPORTS, fromStrip, HELIPADS, heightAt, WORLD_SIZE } from '../world/island'
 import { DEGREES, useTelemetry } from './telemetry'
 
 // Pixels along one side of the painted map. It is scaled to whatever size is shown.
@@ -58,8 +59,33 @@ function paintMap(canvas: HTMLCanvasElement) {
 
 const percent = (metres: number) => `${(metres / WORLD_SIZE + 0.5) * 100}%`
 
-/** Map of the whole world with the airports, the aircraft's position and heading, and other traffic. */
+/**
+ * Every helipad as a white H in a dark circle, on a map `size` pixels across. Airport pads
+ * are smaller, since the airport's code already marks the spot.
+ */
+function HelipadMarks({ size, large }: { size: number; large: boolean }) {
+  const at = (metres: number) => ((metres / WORLD_SIZE + 0.5) * size).toFixed(1)
+  return HELIPADS.map(pad => {
+    const scale = (large ? 1.3 : 1) * (pad.airport ? 0.75 : 1)
+    return (
+      <g key={pad.id} transform={`translate(${at(pad.x)} ${at(pad.z)}) scale(${scale})`}>
+        <circle r="4.5" fill="#1c2529" stroke="#ffffff" strokeWidth="1" />
+        <path
+          d="M -1.8 -2.4 V 2.4 M 1.8 -2.4 V 2.4 M -1.8 0 H 1.8"
+          stroke="#ffffff"
+          strokeWidth="1.1"
+        />
+      </g>
+    )
+  })
+}
+
+/**
+ * Map of the whole world with the airports, helipads, the aircraft's position and heading,
+ * and other traffic.
+ */
 export function MiniMap({ large }: { large: boolean }) {
+  const storm = useGame(state => state.weather === 'storm')
   const [windowHeight, setWindowHeight] = useState(window.innerHeight)
   useEffect(() => {
     const update = () => setWindowHeight(window.innerHeight)
@@ -129,6 +155,19 @@ export function MiniMap({ large }: { large: boolean }) {
       style={{ width: size, height: size }}
     >
       <canvas ref={canvas} width={RESOLUTION} height={RESOLUTION} className="size-full" />
+      {/* Storm cells show as weather radar returns: red in the core, amber and green around it */}
+      {storm &&
+        STORM_CELLS.map(cell => (
+          <span
+            key={`${cell.x} ${cell.z}`}
+            className="absolute aspect-square -translate-1/2 rounded-full bg-[radial-gradient(circle,#e3412f_0%,#f2b33b_30%,#5fbf4ab0_52%,transparent_70%)]"
+            style={{
+              left: percent(cell.x),
+              top: percent(cell.z),
+              width: `${((cell.radius * 4) / WORLD_SIZE) * 100}%`
+            }}
+          />
+        ))}
       <span className="absolute top-1 left-1.5 text-xs font-bold text-white drop-shadow">N ↑</span>
       <span className="absolute right-1.5 bottom-1 text-xs text-white/85 drop-shadow">
         <kbd className="font-sans font-bold">M</kbd> {large ? 'hides the map' : 'enlarges the map'}
@@ -138,6 +177,7 @@ export function MiniMap({ large }: { large: boolean }) {
         viewBox={`0 0 ${size} ${size}`}
         aria-hidden="true"
       >
+        <HelipadMarks size={size} large={large} />
         <polyline ref={route} fill="none" stroke="#e06bf0" strokeWidth="2" strokeLinejoin="round" />
         {Array.from({ length: 16 }, (_, i) => i).map(i => (
           <circle

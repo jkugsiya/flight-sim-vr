@@ -56,7 +56,7 @@ export const GRAPHICS_PRESETS: Record<Exclude<GraphicsPreset, 'custom'>, Graphic
 /** Everything the player chooses that the game remembers between visits. */
 export type Settings = {
   wind: 'calm' | 'light' | 'strong'
-  weather: 'clear' | 'cloudy' | 'rain' | 'fog'
+  weather: 'clear' | 'cloudy' | 'rain' | 'fog' | 'storm'
   time: 'morning' | 'noon' | 'evening' | 'night'
   muted: boolean
   coach: boolean
@@ -117,7 +117,7 @@ export function loadSettings(): Settings {
     const oldCoach = localStorage.getItem(OLD_COACH_KEY)
     return {
       wind: oneOf(stored.wind, ['calm', 'light', 'strong'], defaults.wind),
-      weather: oneOf(stored.weather, ['clear', 'cloudy', 'rain', 'fog'], defaults.weather),
+      weather: oneOf(stored.weather, ['clear', 'cloudy', 'rain', 'fog', 'storm'], defaults.weather),
       time: oneOf(stored.time, ['morning', 'noon', 'evening', 'night'], defaults.time),
       muted: oneOf(stored.muted, [true, false], defaults.muted),
       coach: oneOf(stored.coach, [true, false], oldCoach ? oldCoach !== 'off' : defaults.coach),

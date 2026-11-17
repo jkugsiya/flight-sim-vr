@@ -69,7 +69,7 @@ function lineOverlays(patches: Patch[], lines: (width: number) => Line[]) {
     const geometry = patchGeometry(group)
     // Across the strip from one edge to the other; the lines run unchanged along it
     const uv = new Float32Array(group.length * 8)
-    group.forEach((_, i) => uv.set([0, 0, 1, 0, 1, 1, 0, 1], i * 8))
+    for (let i = 0; i < group.length; i++) uv.set([0, 0, 1, 0, 1, 1, 0, 1], i * 8)
     geometry.setAttribute('uv', new BufferAttribute(uv, 2))
     // Every texel carries the line colour, so faded edges stay that colour in the distance;
     // only the opacity marks where a line is
@@ -390,7 +390,7 @@ const LAYER = { aprons: 0.0005, runways: 0.001, paint: 0.0015, numbers: 0.002 }
 /** Runways, taxiways, aprons, paint, and buildings for every airport on the map. */
 export function Airports() {
   // Rain darkens the pavement and gives it a sheen
-  const wet = useGame(state => state.weather === 'rain')
+  const wet = useGame(state => state.weather === 'rain' || state.weather === 'storm')
   const surfaces = useMemo(() => {
     const runways: Patch[] = []
     const taxiLines: Patch[] = []

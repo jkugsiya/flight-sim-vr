@@ -7,10 +7,11 @@ const FEET = 3.28084
 const FPM = 196.85
 
 /**
- * Ground proximity warnings, highest priority first. Warnings are red and need action now;
- * cautions are amber.
+ * Ground proximity and windshear warnings, highest priority first. Warnings are red and need
+ * action now; cautions are amber.
  */
 export type Alert =
+  | 'WINDSHEAR'
   | 'PULL UP'
   | 'TERRAIN AHEAD'
   | 'TERRAIN'
@@ -21,7 +22,7 @@ export type Alert =
   | 'GLIDESLOPE'
   | 'BANK ANGLE'
 
-export const WARNINGS: ReadonlySet<Alert> = new Set(['PULL UP', 'TERRAIN AHEAD'])
+export const WARNINGS: ReadonlySet<Alert> = new Set(['WINDSHEAR', 'PULL UP', 'TERRAIN AHEAD'])
 
 // Heights in feet above the ground that are called out on the way down to land
 const CALLOUTS = [500, 100, 50, 40, 30, 20, 10]
@@ -39,6 +40,8 @@ const REPEAT = 2.2
  */
 export class Gpws {
   alert: Alert | null = null
+  /** Set by the game each frame while the windshear detector warns. */
+  windshear = false
   private lastHeight = 0
   private closure = 0
   private spokenAt = Number.NEGATIVE_INFINITY
@@ -82,10 +85,12 @@ export class Gpws {
     }
     // High enough above the top callout to arm them all for the next descent
     if (feet > CALLOUTS[0] + 100) this.calledBelow = Number.POSITIVE_INFINITY
-    const alert = this.check(sim, controls, nav, feet)
-    if (alert !== this.alert || (alert && this.time - this.spokenAt > REPEAT)) {
+    const alert = this.windshear ? 'WINDSHEAR' : this.check(sim, controls, nav, feet)
+    // Windshear is called three times when it starts, not over and over
+    const repeats = alert !== 'WINDSHEAR' && this.time - this.spokenAt > REPEAT
+    if (alert !== this.alert || (alert && repeats)) {
       if (alert) {
-        this.speak(alert === 'PULL UP' ? 'Pull up! Pull up!' : capitalise(alert), true)
+        this.speak(PHRASES[alert] ?? capitalise(alert), true)
         this.spokenAt = this.time
       }
     }
@@ -198,6 +203,11 @@ export class Gpws {
 /** True within 3 km of an airport's grounds, where the terrain modes stand down. */
 function nearAirport(x: number, z: number) {
   return AIRPORTS.some(airport => Math.hypot(airport.x - x, airport.z - z) < airport.reach + 3000)
+}
+
+const PHRASES: Partial<Record<Alert, string>> = {
+  WINDSHEAR: 'Windshear! Windshear! Windshear!',
+  'PULL UP': 'Pull up! Pull up!'
 }
 
 const capitalise = (alert: Alert) => alert.charAt(0) + alert.slice(1).toLowerCase()

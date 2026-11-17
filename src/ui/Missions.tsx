@@ -1,16 +1,22 @@
 import { type ReactNode, useCallback, useRef, useState } from 'react'
 import { bombAdvice, missileAdvice } from '../game/bombs'
 import { type Advice, landingAdvice } from '../game/coach'
+import { combatAdvice } from '../game/combat'
 import { game, useGame } from '../game/game'
 import {
+  HOIST_HIGH,
+  HOIST_LOW,
+  HOIST_REACH,
   MISSION_CATEGORIES,
   MISSIONS,
   type Mission,
   type MissionCategory,
-  passedMissions
+  passedMissions,
+  type Rescue
 } from '../game/missions'
 import { HANGAR } from '../sim/aircraft'
 import type { FlightSim } from '../sim/flight-sim'
+import { AIRPORTS } from '../world/island'
 import { Key } from './Hud'
 import { setText, useTelemetry } from './telemetry'
 
@@ -26,7 +32,9 @@ const CATEGORY_TITLES: Record<MissionCategory, string> = {
   Airline: 'Airline Flights',
   Challenge: 'Challenges',
   Bombing: 'Bombing Range',
-  Strike: 'Air Strike'
+  Strike: 'Air Strike',
+  'Air Combat': 'Air Combat',
+  Helicopter: 'Helicopter'
 }
 
 const CATEGORY_NOTES: Record<MissionCategory, string> = {
@@ -35,7 +43,9 @@ const CATEGORY_NOTES: Record<MissionCategory, string> = {
   Airline: 'Passengers aboard, gate to gate.',
   Challenge: 'Harder flying when things go wrong.',
   Bombing: 'The B-2 on the Gull Point practice range.',
-  Strike: 'Fighters with guided missiles on the same range.'
+  Strike: 'Fighters with guided missiles on the same range.',
+  'Air Combat': 'Heat-seekers and flares against enemy aircraft that fight back.',
+  Helicopter: 'The Black Hawk: hovering, rooftop pads, and rescues at sea.'
 }
 
 /** Mission text with keys in square brackets drawn as key caps. */
@@ -77,7 +87,7 @@ function conditions(mission: Mission) {
   const parts = [
     mission.weather &&
       mission.weather !== 'clear' &&
-      { cloudy: 'low cloud', rain: 'rain', fog: 'fog' }[mission.weather],
+      { cloudy: 'low cloud', rain: 'rain', fog: 'fog', storm: 'thunderstorms' }[mission.weather],
     mission.time &&
       mission.time !== 'noon' &&
       { morning: 'morning', evening: 'sunset', night: 'night' }[mission.time],
@@ -244,10 +254,20 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
-      {mission.missiles !== undefined && <MissilePanel total={mission.missiles} />}
+      {mission.enemies || mission.waves ? (
+        <CombatPanel
+          total={mission.missiles ?? 0}
+          enemies={(mission.enemies?.length ?? 0) + (mission.waves?.flat().length ?? 0)}
+          base={AIRPORTS.find(airport => airport.code === mission.base)?.name}
+          escort={mission.escort !== undefined}
+        />
+      ) : (
+        mission.missiles !== undefined && <MissilePanel total={mission.missiles} />
+      )}
       {mission.bombs !== undefined && (
         <BombPanel total={mission.bombs} demolish={mission.demolish} />
       )}
+      {mission.rescue && <RescuePanel rescue={mission.rescue} />}
       {alert && (
         <p
           role="alert"
@@ -255,6 +275,98 @@ export function MissionCard({ mission }: { mission: Mission }) {
         >
           <KeyText text={alert.text} />{' '}
           <span className="text-warn tabular-nums">Mission fails in {alert.left} s</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
+const FEET_PER_METRE = 3.281
+
+/**
+ * Survivors aboard, the winch's progress on the next one, and what keeps the winch from
+ * running: too far from the boat, too high or low, or drifting.
+ */
+function RescuePanel({ rescue }: { rescue: Rescue }) {
+  const count = useRef<HTMLSpanElement>(null)
+  const hint = useRef<HTMLSpanElement>(null)
+  useTelemetry(
+    useCallback(
+      (sim: FlightSim) => {
+        const { aboard, hoist } = game.missions
+        const winching = hoist > 0 ? ` · Winching ${Math.round(hoist * 100)}%` : ''
+        setText(count.current, `Aboard ${aboard} of ${rescue.survivors}${winching}`)
+        const away = Math.hypot(sim.position.x - rescue.x, sim.position.z - rescue.z)
+        const wheels = sim.position.y - sim.spec.restHeight
+        let text = ''
+        if (aboard >= rescue.survivors || away > 400) text = ''
+        else if (away > HOIST_REACH) text = `Boat ${Math.round(away)} m away. Hover right over it.`
+        else if (wheels > HOIST_HIGH) {
+          text = `Too high for the winch: come down below ${Math.round(HOIST_HIGH * FEET_PER_METRE)} ft.`
+        } else if (wheels < HOIST_LOW) {
+          text = `Too low: climb above ${Math.round(HOIST_LOW * FEET_PER_METRE)} ft.`
+        } else if (sim.groundSpeed > 3) text = 'Drifting: let go of the keys to steady the hover.'
+        setText(hint.current, text)
+      },
+      [rescue]
+    )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      <span ref={hint} className="mt-1 block leading-snug empty:hidden" />
+    </div>
+  )
+}
+
+/**
+ * Missiles and flares left, enemies down, the escort's state, and advice: the missile
+ * warning, the lock, which way to turn, or where to rearm. `base` names the airport where
+ * the ground crew rearms you.
+ */
+function CombatPanel(props: { total: number; enemies: number; base?: string; escort: boolean }) {
+  const { total, enemies, base, escort } = props
+  const count = useRef<HTMLSpanElement>(null)
+  const [advice, setAdvice] = useState('')
+  const [warning, setWarning] = useState(false)
+  const shown = useRef({ text: '', at: 0 })
+  useTelemetry(
+    useCallback(
+      (sim: FlightSim) => {
+        const { combat } = game
+        const friend = combat.escort
+        const status = !escort
+          ? ''
+          : friend?.alive === false
+            ? ' · B-2 down'
+            : friend?.hits
+              ? ' · B-2 hit once'
+              : ' · B-2 unharmed'
+        setText(
+          count.current,
+          `Missiles ${combat.ammo} of ${total} · Flares ${combat.flaresLeft} · Down ${combat.downed} of ${enemies}${status}`
+        )
+        // The missile warning shows at once; other advice holds half a second to be read
+        const next = combatAdvice(combat, sim, base) ?? ''
+        const now = performance.now()
+        if (next === shown.current.text) return
+        if (!combat.warning && now - shown.current.at < 500) return
+        shown.current = { text: next, at: now }
+        setAdvice(next)
+        setWarning(combat.warning)
+      },
+      [total, enemies, base, escort]
+    )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      {advice && (
+        <p
+          className="data-[warning=true]:bg-warn mt-1 rounded-sm leading-snug data-[warning=true]:px-1.5 data-[warning=true]:py-0.5 data-[warning=true]:font-bold data-[warning=true]:text-white"
+          data-warning={warning}
+        >
+          <KeyText text={advice} />
         </p>
       )}
     </div>

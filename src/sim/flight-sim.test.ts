@@ -85,7 +85,10 @@ function holdAltitude(sim: FlightSim, c: Controls, altitude: number, maxPitch = 
   holdAttitude(sim, c, climb * maxPitch)
 }
 
-describe.each(HANGAR)('$name', spec => {
+/** Every fixed-wing aircraft. The helicopter has its own tests below. */
+const PLANES = HANGAR.filter(spec => !spec.rotor)
+
+describe.each(PLANES)('$name', spec => {
   test('starts cold, then starts each engine in turn', () => {
     const sim = new FlightSim(FLAT, spec)
     sim.placeOnGround(0, 0, 0)
@@ -680,5 +683,85 @@ describe('the Cessna matches the 172S handbook at full weight, sea level', () =>
     landing.velocity.set(0, 0, -50 * KNOT)
     run(landing, controls({ brake: 1, flapNotch: 3 }), 40)
     expect(-landing.position.z / FT).toBeWithin(500, 650)
+  })
+})
+
+describe('Sikorsky UH-60 Black Hawk', () => {
+  const blackHawk = find('uh60')
+
+  /** Flies with the real key handling, so the stability system works the collective too. */
+  function hover(altitude: number, speed = 0) {
+    const sim = flying(blackHawk, altitude, speed)
+    const pilot = new Pilot()
+    pilot.resetForAir(blackHawk, sim)
+    Object.assign(pilot.controls, sim.settleOnPath(0, 0, true, CALM))
+    const fly = (seconds: number) =>
+      run(sim, pilot.controls, seconds, () => pilot.update(STEP, sim))
+    return { sim, pilot, fly }
+  }
+
+  test('starts both engines and spins the rotor up to 100%', () => {
+    const sim = new FlightSim(FLAT, blackHawk)
+    sim.placeOnGround(0, 0, 0)
+    const c = controls({ parkingBrake: true })
+    run(sim, c, 45)
+    expect(sim.enginesRunning).toBe(2)
+    expect(sim.rotorSpeed).toBeGreaterThan(0.99)
+    expect(sim.rotorSpeed).toBeLessThan(1.01)
+    expect(sim.onGround).toBe(true)
+  })
+
+  test('holds a hover hands off', () => {
+    const { sim, fly } = hover(300)
+    fly(30)
+    expect(Math.abs(sim.position.y - 300)).toBeLessThan(2)
+    expect(Math.hypot(sim.position.x, sim.position.z)).toBeLessThan(3)
+    // Hover power at a light weight sits near half the engines' torque
+    expect(sim.rpm).toBeGreaterThan(40)
+    expect(sim.rpm).toBeLessThan(65)
+  })
+
+  test('holds a low hover over the ground in a strong quartering headwind', () => {
+    const { sim, pilot } = hover(15)
+    const wind = new Vector3(10, 0, 9)
+    for (let time = 0; time < 40; time += STEP) {
+      pilot.update(STEP, sim)
+      sim.step(STEP, pilot.controls, wind)
+    }
+    expect(sim.crash).toBeNull()
+    expect(sim.groundSpeed).toBeLessThan(0.5)
+    expect(Math.abs(sim.heading)).toBeLessThan(0.05)
+  })
+
+  test('slows from cruise to a hover hands off once the trim is centred', () => {
+    const { sim, pilot, fly } = hover(500, 120 * KNOT)
+    pilot.controls.trim = 0
+    fly(60)
+    expect(sim.groundSpeed).toBeLessThan(1)
+    expect(Math.abs(sim.position.y - 500)).toBeLessThan(30)
+    expect(Math.abs(sim.pitch)).toBeLessThan(0.05)
+  })
+
+  test('turns in place on the pedals and holds the new heading', () => {
+    const { sim, pilot, fly } = hover(300)
+    pilot.press('KeyD', false, sim)
+    fly(3)
+    pilot.release('KeyD')
+    fly(3)
+    const heading = sim.heading
+    expect(heading).toBeGreaterThan(1)
+    fly(10)
+    expect(Math.abs(sim.heading - heading)).toBeLessThan(0.02)
+  })
+
+  test('glides with the engines out and the collective down, the rotor still turning', () => {
+    const { sim, pilot, fly } = hover(1000, 80 * KNOT)
+    pilot.controls.engineSwitches.fill(false)
+    pilot.controls.throttle = 0
+    fly(30)
+    expect(sim.rotorSpeed).toBeGreaterThan(0.95)
+    // About 2,000 to 3,000 ft/min down at 80 kt
+    expect(sim.verticalSpeed).toBeLessThan(-8)
+    expect(sim.verticalSpeed).toBeGreaterThan(-16)
   })
 })

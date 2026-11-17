@@ -3,9 +3,11 @@ import {
   CITIES,
   forestAt,
   fromStrip,
+  HOSPITAL_GROUNDS,
   heightAt,
   ISLES,
   isClearZone,
+  STRUCTURES,
   slopeAt,
   toStrip,
   WORLD_SIZE
@@ -31,7 +33,9 @@ export type Obstacle = {
   base: number
   top: number
   radius: number
-  kind: 'tree' | 'building'
+  kind: 'tree' | 'building' | 'boat'
+  /** Stays solid when a bomb flattens the city around it, as the hospital does. */
+  bombproof?: boolean
 }
 
 export type House = {
@@ -133,7 +137,7 @@ export type CityBlock = {
   across: number
   length: number
   width: number
-  use: 'buildings' | 'houses' | 'park' | 'plaza'
+  use: 'buildings' | 'houses' | 'park' | 'plaza' | 'hospital'
 }
 
 /** Pointed cap on a skyscraper, or a mast on its roof. */
@@ -347,7 +351,11 @@ function buildCities() {
       }
     }
 
+    // How many of each part there were as each block began, to empty the hospital's block later
+    const parts = [towers, spires, crowns, trees, houses]
+    const starts: number[][] = []
     for (const block of blocks) {
+      starts.push(parts.map(part => part.length))
       const r = reach(block)
       const center = fromStrip(city, block.along, block.across)
       const ceiling = buildingCeiling(center.x, center.z)
@@ -475,6 +483,23 @@ function buildCities() {
           }
         }
       }
+    }
+    // The hospital takes over the blocks under its grounds. They are laid out as usual and then
+    // emptied, so every other block keeps the same buildings.
+    const grounds = toStrip(city, HOSPITAL_GROUNDS.x, HOSPITAL_GROUNDS.z)
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const block = blocks[i]
+      if (
+        Math.abs(block.along - grounds.along) * 2 >= block.length + HOSPITAL_GROUNDS.length ||
+        Math.abs(block.across - grounds.across) * 2 >= block.width + HOSPITAL_GROUNDS.width
+      ) {
+        continue
+      }
+      block.use = 'hospital'
+      const ends = starts[i + 1] ?? parts.map(part => part.length)
+      parts.forEach((part, k) => {
+        part.splice(starts[i][k], ends[k] - starts[i][k])
+      })
     }
 
     // Suburbs: rows of houses on the gentle ground around the city, thinning out with distance
@@ -735,6 +760,34 @@ export const OBSTACLES: Obstacle[] = [
       kind: 'tree'
     })
   ),
+  // Decks stop 1 m short of their tops, so wheels pressed into a deck do not touch them
+  ...STRUCTURES.flatMap(structure => {
+    const kind = structure.kind === 'ship' ? 'boat' : 'building'
+    const circles: Obstacle[] = structure.posts.map(post => ({ ...post, kind, bombproof: true }))
+    for (const deck of structure.decks) {
+      const along = Math.ceil(deck.length / 12)
+      const across = Math.ceil(deck.width / 12)
+      const cellLength = deck.length / along
+      const cellWidth = deck.width / across
+      for (let i = 0; i < along; i++) {
+        for (let j = 0; j < across; j++) {
+          circles.push({
+            ...fromStrip(
+              deck,
+              (i - (along - 1) / 2) * cellLength,
+              (j - (across - 1) / 2) * cellWidth
+            ),
+            base: deck.base,
+            top: deck.top - 1,
+            radius: Math.hypot(cellLength, cellWidth) * 0.5,
+            kind,
+            bombproof: true
+          })
+        }
+      }
+    }
+    return circles
+  }),
   {
     x: LIGHTHOUSE.x,
     z: LIGHTHOUSE.z,

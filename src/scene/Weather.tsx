@@ -15,6 +15,7 @@ import {
 } from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { game, useGame } from '../game/game'
+import { insideCell, STORM_CELLS } from '../game/storm'
 import { seededRandom } from '../world/noise'
 import { WEATHER } from '../world/weather'
 import { cloudLight, fogUniform, HAZE_GLSL, horizon, SUN_DIRECTION, sunColor } from './atmosphere'
@@ -33,7 +34,15 @@ import { detailTexture } from './textures'
 export function Environment() {
   useFrame(({ scene }) => {
     const { time, weather } = game.getState()
-    updateEnvironment(time, weather, eye.y)
+    const { x, y, z } = eye
+    const storm = weather === 'storm'
+    updateEnvironment(
+      time,
+      weather,
+      y,
+      storm ? game.storm.lightning.flash : 0,
+      storm ? insideCell(x, y, z) : 0
+    )
     const fog = scene.fog as FogExp2 | Fog | null
     if (fog && 'density' in fog) {
       fog.color.copy(horizon)
@@ -69,6 +78,9 @@ const DECK_FRAGMENT = /* glsl */ `
   uniform vec3 daylight;
   uniform float fogDensity;
   uniform float darkness;
+  // Storm cells: x, z, and radius. The deck darkens over each one.
+  uniform vec3 cells[${STORM_CELLS.length}];
+  uniform float stormy;
   varying vec3 vWorld;
   varying float vSide;
   ${HAZE_GLSL}
@@ -87,6 +99,13 @@ const DECK_FRAGMENT = /* glsl */ `
     } else {
       // The underside is grey, darker where the cloud is thickest
       color = daylight * (0.62 - 0.3 * lumps) * (1.0 - darkness);
+      // A storm cell's base hangs dark and heavy, wider than its core
+      float under = 0.0;
+      for (int i = 0; i < ${STORM_CELLS.length}; i++) {
+        float reach = distance(p, cells[i].xy) / cells[i].z;
+        under = max(under, 1.0 - smoothstep(0.4, 3.2, reach + (lumps - 0.5) * 0.6));
+      }
+      color *= 1.0 - 0.75 * under * stormy;
     }
     float distance = length(cameraPosition - vWorld);
     gl_FragColor = vec4(applyHaze(color, distance), 1.0);
@@ -108,7 +127,7 @@ function deckGeometry(base: number, top: number) {
   return mergeGeometries([sheet(base, 0), sheet(top, 1)])
 }
 
-/** The overcast deck for low cloud and rain: grey from below, bright tops from above. */
+/** The overcast deck for low cloud, rain, and storms: grey from below, bright tops from above. */
 export function CloudDeck() {
   const weather = useGame(state => state.weather)
   const deck = WEATHER[weather].deck
@@ -122,7 +141,9 @@ export function CloudDeck() {
           sunDirection: { value: SUN_DIRECTION },
           daylight: cloudLight,
           fogDensity: fogUniform,
-          darkness: { value: 0 }
+          darkness: { value: 0 },
+          cells: { value: STORM_CELLS.map(cell => new Vector3(cell.x, cell.z, cell.radius)) },
+          stormy: { value: 0 }
         },
         vertexShader: DECK_VERTEX,
         fragmentShader: DECK_FRAGMENT,
@@ -142,7 +163,8 @@ export function CloudDeck() {
     if (!mesh) return
     // Keep the deck under the camera, snapped so its texture does not slide
     mesh.position.set(Math.round(eye.x / 500) * 500, 0, Math.round(eye.z / 500) * 500)
-    material.uniforms.darkness.value = weather === 'rain' ? 0.25 : 0
+    material.uniforms.darkness.value = weather === 'storm' ? 0.42 : weather === 'rain' ? 0.25 : 0
+    material.uniforms.stormy.value = weather === 'storm' ? 1 : 0
   })
   return mesh && <primitive object={mesh} />
 }
@@ -150,6 +172,9 @@ export function CloudDeck() {
 // Raindrops fill a box this many metres wide around the camera
 const RAIN_BOX = 70
 const RAIN_DROPS = { high: 5000, low: 1800 }
+// A storm's downpour: more drops, falling faster
+const STORM_DROPS = { high: 9000, low: 3200 }
+const FALL_SPEED = { rain: 9, storm: 12 }
 
 const RAIN_VERTEX = /* glsl */ `
   attribute float tail;
@@ -157,11 +182,12 @@ const RAIN_VERTEX = /* glsl */ `
   uniform vec3 eye;
   uniform vec3 streak;
   uniform float box;
+  uniform float fall;
   varying float vTail;
   ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     // Each drop falls through the box and wraps around, so the box always stays full
-    vec3 drop = position - vec3(0.0, time * 9.0, 0.0) - eye;
+    vec3 drop = position - vec3(0.0, time * fall, 0.0) - eye;
     drop = mod(drop, box) - box * 0.5 + eye;
     // The streak points along the air rushing past, longer the faster you fly
     drop += streak * tail;
@@ -173,22 +199,25 @@ const RAIN_VERTEX = /* glsl */ `
 
 const RAIN_FRAGMENT = /* glsl */ `
   uniform vec3 daylight;
+  uniform float opacity;
   varying float vTail;
   ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
     ${LOG_DEPTH_FRAGMENT}
-    gl_FragColor = vec4(daylight * 0.9 + 0.08, 0.32 * (1.0 - vTail * 0.7));
+    gl_FragColor = vec4(daylight * 0.9 + 0.08, opacity * (1.0 - vTail * 0.7));
   }
 `
 
 const airflow = new Vector3()
 
-/** Rain streaks around the camera while it is below the cloud base in rain. */
+/** Rain streaks around the camera while it is below the cloud base in rain or a storm. */
 export function Rain() {
   const weather = useGame(state => state.weather)
   const detailed = useGame(state => state.graphics.ground)
+  const storm = weather === 'storm'
   const rain = useMemo(() => {
-    const count = detailed ? RAIN_DROPS.high : RAIN_DROPS.low
+    const drops = storm ? STORM_DROPS : RAIN_DROPS
+    const count = detailed ? drops.high : drops.low
     const random = seededRandom(77)
     const positions = new Float32Array(count * 6)
     const tails = new Float32Array(count * 2)
@@ -208,6 +237,8 @@ export function Rain() {
         eye: { value: new Vector3() },
         streak: { value: new Vector3() },
         box: { value: RAIN_BOX },
+        fall: { value: storm ? FALL_SPEED.storm : FALL_SPEED.rain },
+        opacity: { value: storm ? 0.42 : 0.32 },
         daylight: cloudLight
       },
       vertexShader: RAIN_VERTEX,
@@ -218,18 +249,18 @@ export function Rain() {
     const lines = new LineSegments(geometry, material)
     lines.frustumCulled = false
     return lines
-  }, [detailed])
+  }, [detailed, storm])
   useDisposal(rain)
   useFrame(({ clock }) => {
-    const falling = weather === 'rain' && environment.raining
+    const falling = (weather === 'rain' || storm) && environment.raining
     rain.visible = falling
     if (!falling) return
     const uniforms = (rain.material as ShaderMaterial).uniforms
     uniforms.time.value = clock.elapsedTime
     uniforms.eye.value.copy(eye)
-    // Drops fall at 9 m/s; the aircraft's own speed sweeps them back past the camera
+    // Drops fall straight down; the aircraft's own speed sweeps them back past the camera
     const { sim } = game
-    airflow.set(0, -9, 0).sub(sim.velocity).multiplyScalar(0.035)
+    airflow.set(0, -uniforms.fall.value, 0).sub(sim.velocity).multiplyScalar(0.035)
     uniforms.streak.value.copy(airflow)
   })
   return <primitive object={rain} />

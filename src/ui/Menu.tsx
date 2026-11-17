@@ -11,10 +11,13 @@ export const CRASH_REASONS: Record<CrashReason, string> = {
   terrain: 'The aircraft hit the ground.',
   water: 'The aircraft went into the sea.',
   'hard-landing': 'You touched down too hard. Keep the descent under 700 feet per minute.',
-  'gear-up': 'You touched down with the gear up. Press G to lower it before landing.',
+  'gear-up':
+    'You touched down too hard with the gear up. Press G to lower it before landing. With the gear stuck, sink under 600 feet per minute with the wings level.',
   'gear-collapse': 'The landing gear collapsed on rough ground.',
   overspeed:
     'The aircraft stayed far past its never-exceed speed and broke up. Throttle back when OVERSPEED shows. Low down the air is thick: climb before going fast.',
+  missile:
+    'An enemy missile hit the aircraft. When MISSILE flashes, press Space for flares and turn hard across its path.',
   tree: 'The aircraft flew into a tree.',
   building: 'The aircraft flew into a building.',
   balloon: 'The aircraft flew into a hot-air balloon.',
@@ -31,6 +34,16 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['A', 'D'], 'Rudder, and steering on the ground'],
       [['Shift'], 'Hold with the above for fine control'],
       [['Q', 'E'], 'Trim nose down, nose up']
+    ]
+  },
+  {
+    title: 'Helicopter',
+    rows: [
+      [['W', 'S'], 'Climb, descend. Let go and it holds the height'],
+      [['↑', '↓'], 'Tilt forward to fly ahead, back to slow down'],
+      [['←', '→'], 'Slide sideways in a hover, bank to turn at speed'],
+      [['A', 'D'], 'Turn on the spot'],
+      [['Q', 'E'], 'Speed held hands off: faster, slower, down to a hover']
     ]
   },
   {
@@ -70,7 +83,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['G'], 'Raise or lower the landing gear'],
       [['B'], 'Open or close the airbrake'],
       [['R'], 'Reverse thrust, on the ground or in the air'],
-      [['Space'], 'Wheel brakes while held'],
+      [['Space'], 'Wheel brakes while held. In the air in a fight, drop flares'],
       [[',', '.'], 'Left or right brake, to turn tightly on the ground'],
       [['P'], 'Parking brake'],
       [['L'], 'Landing lights'],
@@ -84,6 +97,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
     rows: [
       [['C'], 'Switch between chase and cockpit view'],
       [['M'], 'Enlarge, then hide the map'],
+      [['`'], 'Photo mode: freeze the flight, hide the panels, and move a free camera'],
       [['Esc'], 'Pause']
     ]
   }
@@ -267,6 +281,51 @@ function Silhouette({ spec }: { spec: AircraftSpec }) {
         [0.7, 7.1]
       ])
     )
+  } else if (shape.type === 'helicopter') {
+    const { rotor } = spec
+    nose = -7.6
+    tail = rotor ? rotor.tailHub.z + rotor.tailRadius : 10
+    // Cabin and tail boom, the stabilator, then the four main blades crossed over the cabin
+    parts.push(
+      [
+        [0, nose],
+        [0.8, -7.1],
+        [1.15, -6.2],
+        [1.18, 1.8],
+        [0.6, 4.5],
+        [0.3, 10],
+        [-0.3, 10],
+        [-0.6, 4.5],
+        [-1.18, 1.8],
+        [-1.15, -6.2],
+        [-0.8, -7.1]
+      ],
+      [
+        [-2.19, 9.1],
+        [2.19, 9.1],
+        [2.19, 9.9],
+        [-2.19, 9.9]
+      ]
+    )
+    if (rotor) {
+      const { x, z } = rotor.tailHub
+      parts.push([
+        [x, z - rotor.tailRadius],
+        [x + 0.25, z - rotor.tailRadius],
+        [x + 0.25, z + rotor.tailRadius],
+        [x, z + rotor.tailRadius]
+      ])
+      for (let i = 0; i < rotor.blades; i++) {
+        const angle = Math.PI / 4 + (i * Math.PI * 2) / rotor.blades
+        const [cos, sin] = [Math.cos(angle), Math.sin(angle)]
+        // `r` metres out along the blade, `w` metres across it
+        const at = (r: number, w: number): [number, number] => [
+          rotor.hub.x + cos * r - sin * w,
+          rotor.hub.z + sin * r + cos * w
+        ]
+        parts.push([at(0, -0.35), at(rotor.radius, -0.35), at(rotor.radius, 0.35), at(0, 0.35)])
+      }
+    }
   } else {
     nose = shape.noseZ
     tail = shape.tailZ
@@ -366,7 +425,7 @@ export function Menu() {
   let summary = CRASH_REASONS[crash ?? 'terrain']
   if (status === 'menu') {
     summary =
-      'Eleven real aircraft, from a Cessna to the Space Shuttle, nine islands, and twelve airports. Fly free, or take on a mission.'
+      'Twelve real aircraft, from a Cessna to the Space Shuttle and a Black Hawk helicopter, nine islands, and twelve airports. Fly free, or take on a mission.'
   } else if (status === 'paused') {
     summary = 'The aircraft holds its position until you resume.'
   } else if (status === 'finished' && result) {
@@ -437,8 +496,12 @@ export function Menu() {
                             [
                               ['Power', selected.stats.power],
                               ['Top speed', `${selected.stats.topSpeed} kt`],
-                              ['Stall', `${selected.stats.stallSpeed} kt`],
-                              ['Wingspan', `${Math.round(selected.wingSpan)} m`]
+                              selected.rotor
+                                ? ['Climb', `${selected.stats.climb.toLocaleString('en')} ft/min`]
+                                : ['Stall', `${selected.stats.stallSpeed} kt`],
+                              selected.rotor
+                                ? ['Rotor', `${Math.round(selected.rotor.radius * 2)} m`]
+                                : ['Wingspan', `${Math.round(selected.wingSpan)} m`]
                             ] as const
                           ).map(([label, value]) => (
                             <div key={label}>
@@ -495,7 +558,9 @@ export function Menu() {
                       <Action primary={choosing} onClick={game.startAtStand}>
                         {selected.shape.type === 'airliner'
                           ? 'Start at the Gate'
-                          : 'Start at the Hangar'}
+                          : selected.rotor
+                            ? 'Start at the Helipad'
+                            : 'Start at the Hangar'}
                       </Action>
                       <div className="grid grid-cols-2 gap-2">
                         <Action onClick={game.startOnRunway}>On the Runway</Action>
@@ -575,7 +640,8 @@ function ReferenceTabs() {
               ['clear', 'Clear'],
               ['cloudy', 'Low Cloud'],
               ['rain', 'Rain'],
-              ['fog', 'Fog']
+              ['fog', 'Fog'],
+              ['storm', 'Storm']
             ]}
             onChange={game.setWeather}
           />

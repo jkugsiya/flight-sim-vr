@@ -21,7 +21,7 @@ const SHORT_FINAL = 200 * FEET
 // Metres off the centreline that ask for the full turn back, per m/s of ground speed. Light
 // aircraft swing across the line quickly, so the turn back eases in over 18 m at 70 kt;
 // jets turn slowly, and need to be firmly back on the line before the runway.
-const FULL_TURN_SECONDS = { piston: 0.5, jet: 0.25 }
+const FULL_TURN_SECONDS = { piston: 0.5, jet: 0.25, turboshaft: 0.5 }
 // Degrees of bank asked for per degree of track still to turn
 const BANK_GAIN = 2.5
 // Steepest turn back toward the centreline, and the bank to fly it
@@ -38,12 +38,48 @@ const PATH_CORRECTION = 1.5 * DEGREES
 // Throttle within this of the power the coach wants needs no change
 const POWER_SLACK = 0.04
 
+// Helicopter landings with the engines out: wheel heights in metres to flare from, and to
+// cushion the touchdown with the collective from
+const FLARE_FROM = 30
+const CUSHION_FROM = 6
+
+/**
+ * Helicopter advice, wherever it lands: keeping the rotor turning when it slows, and the
+ * flare and cushion of a landing with the engines out.
+ */
+function rotorAdvice(sim: FlightSim, pilot: Pilot): Advice | null {
+  if (sim.onGround) return null
+  const lever = pilot.controls.throttle
+  if (sim.stallWarning && lever > 0.05) {
+    return { text: 'Rotor slowing: hold [S] to lower the collective.', tone: 'warn' }
+  }
+  if (sim.engineRunning) return null
+  const wheels = sim.altitudeAgl - sim.spec.restHeight
+  if (wheels < CUSHION_FROM * 2 && sim.verticalSpeed > 0.5) {
+    return {
+      text: 'Climbing on the stored spin: tap [S] to ease the collective down.',
+      tone: 'fix'
+    }
+  }
+  if (wheels < CUSHION_FROM && sim.verticalSpeed < -1) {
+    return { text: 'Cushion the touchdown: hold [W] to raise the collective.', tone: 'fix' }
+  }
+  if (wheels < FLARE_FROM && sim.groundSpeed > 10 * KNOT) {
+    return { text: 'Flare: hold [↓] to slow down and soften the descent.', tone: 'fix' }
+  }
+  return {
+    text: 'Engines out: keep the collective down and glide at about 80 knots.',
+    tone: 'status'
+  }
+}
+
 /**
  * Advice for a landing on the tuned approach, from the final approach to the stop: the
  * gear, flaps, and speed, then the glide path and flare by hand, or what the autopilot is
  * doing when it lands. Null away from the final approach and while the autopilot holds a heading.
  */
 export function landingAdvice(sim: FlightSim, nav: Navigator, pilot: Pilot): Advice | null {
+  if (sim.spec.rotor) return rotorAdvice(sim, pilot)
   const { approach } = nav
   if (!approach || !nav.onFinal || nav.enroute) return null
   const autoland = pilot.flyingApproach && canAutoland(sim)
@@ -110,14 +146,15 @@ function configure(sim: FlightSim, pilot: Pilot, height: number): Advice | null 
           tone: 'status'
         }
       : { text: `Slow below ${limit} knots for the ${what}: hold [S].`, tone: 'fix' }
-  if (spec.retractableGear && !controls.gearDown) {
+  // Gear stuck up or flaps that cannot move are not worth asking for
+  if (spec.retractableGear && !controls.gearDown && !sim.gearStuck) {
     if (spec.gearSpeed === null || knots < spec.gearSpeed - 5) {
       return { text: 'Lower the gear: press [G].', tone: 'fix' }
     }
     return slow(spec.gearSpeed, 'gear')
   }
   const notches = spec.autoFlaps ? 0 : spec.flapLabels.length - 1
-  if (controls.flapNotch >= notches) return null
+  if (controls.flapNotch >= notches || sim.flapsJammed || sim.hydraulicsFailed) return null
   // The limit for the next flap setting
   const limit = spec.flapSpeeds[controls.flapNotch]
   const what = spec.flapName === 'Nose' ? 'Lower the nose further' : 'More flaps'

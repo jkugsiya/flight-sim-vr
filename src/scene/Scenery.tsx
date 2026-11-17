@@ -60,7 +60,7 @@ function followOrbit(object: Object3D, orbit: Orbit, time: number) {
 }
 
 /** Non-indexed geometry with every vertex painted one colour. */
-function painted(geometry: BufferGeometry, color: string) {
+export function painted(geometry: BufferGeometry, color: string) {
   const flat = geometry.index ? geometry.toNonIndexed() : geometry
   if (!flat.getAttribute('normal')) flat.computeVertexNormals()
   if (!flat.getAttribute('uv')) {
@@ -749,7 +749,13 @@ function streetTexture(plan: (typeof CITY_PLANS)[number]) {
   lines(spansOf('along', 'length'), false)
   ctx.setLineDash([])
 
-  const INNER = { buildings: '#85867f', houses: '#6b7a4c', park: '#557a38', plaza: '#c2b9a6' }
+  const INNER = {
+    buildings: '#85867f',
+    houses: '#6b7a4c',
+    park: '#557a38',
+    plaza: '#c2b9a6',
+    hospital: '#a9aba4'
+  }
   for (const block of blocks) {
     ctx.fillStyle = '#9d9d95'
     ctx.fillRect(...rect(block.along, block.across, block.length, block.width))

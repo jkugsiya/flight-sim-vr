@@ -278,7 +278,8 @@ export function planRoute(
       ROUTE_CLEARANCE
   )
   const last = corners.length - 1
-  const ceiling = spec.engine.type === 'piston' ? 2600 : 7500
+  // Propellers and rotors cruise low; jets climb high
+  const ceiling = spec.engine.type === 'jet' ? 7500 : 2600
   const wanted = Math.min(ceiling, Math.max(900, span * 0.02 + to.elevation))
   const joinSafe =
     highestGround(corners[last - 1].x, corners[last - 1].z, entry.x, entry.z) + ROUTE_CLEARANCE

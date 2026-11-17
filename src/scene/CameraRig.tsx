@@ -60,6 +60,12 @@ export function CameraRig() {
       camera.getWorldQuaternion(eyeQuaternion)
       return
     }
+    // The free camera of photo mode has the view until it closes
+    if (game.getState().photo) {
+      eye.copy(camera.position)
+      eyeQuaternion.copy(camera.quaternion)
+      return
+    }
     const { sim, wreck, effects, bombs } = game
     const view = sim.spec.camera
     const circle = orbit.current

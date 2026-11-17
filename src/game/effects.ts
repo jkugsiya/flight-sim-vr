@@ -38,6 +38,10 @@ const TYRE_SMOKE: Rgb = [0.75, 0.75, 0.77]
 const DUST: Rgb = [0.5, 0.43, 0.31]
 const SOOT: Rgb = [0.05, 0.045, 0.04]
 const ASH: Rgb = [0.22, 0.21, 0.2]
+// Downwash puffs per second at full strength, with the rotor at the ground
+const WASH_RATE = 60
+const DISTRESS: Rgb = [1, 0.32, 0.04]
+const DISTRESS_FADED: Rgb = [0.85, 0.55, 0.4]
 const FLAME: Rgb = [1.7, 0.55, 0.06]
 const EMBER: Rgb = [0.75, 0.1, 0.01]
 const SPARK: Rgb = [1.8, 0.9, 0.25]
@@ -71,6 +75,8 @@ export class Effects {
   /** Metres flown since the last puff of dumped fuel. */
   private dumpDebt = 0
   private dustDebt = 0
+  /** Downwash puffs owed since the last one. */
+  private washDebt = 0
 
   clear() {
     this.count = 0
@@ -145,7 +151,14 @@ export class Effects {
     let chirp = false
     // Wingtip vapour appears when the wing works hard: tight turns, pull-ups, and near the stall
     const effort = Math.max((Math.abs(sim.gLoad) - 1.6) / 1.5, sim.stall)
-    if (!sim.onGround && sim.indicatedAirspeed > sim.spec.maneuverSpeed * 0.55 && effort > 0) {
+    // A helicopter's wingtips are its rotor tips, which leave no fixed trail
+    const wing = !sim.spec.rotor
+    if (
+      wing &&
+      !sim.onGround &&
+      sim.indicatedAirspeed > sim.spec.maneuverSpeed * 0.55 &&
+      effort > 0
+    ) {
       this.trailDebt += sim.trueAirspeed * dt
       while (this.trailDebt > 1.5) {
         this.trailDebt -= 1.5
@@ -194,6 +207,8 @@ export class Effects {
       }
     }
 
+    this.downwash(dt, sim, ground)
+
     const wheels = sim.spec.contactPoints
     let rolling = false
     for (let i = 0; i < 3; i++) {
@@ -219,6 +234,43 @@ export class Effects {
       }
     } else this.dustDebt = 0
     return chirp
+  }
+
+  /**
+   * A helicopter's downwash close to the ground: spray whipped off the sea, or dust off
+   * grass, blowing out in a ring under the rotor. It grows as the rotor comes lower.
+   */
+  private downwash(dt: number, sim: FlightSim, ground: Ground) {
+    const { rotor } = sim.spec
+    if (!rotor || sim.rotorSpeed < 0.5) return
+    const { x, y, z } = sim.position
+    const terrain = ground.heightAt(x, z)
+    const sea = terrain < 0
+    const surface = sea ? 0 : terrain
+    const reach = rotor.radius * 2.5
+    const strength = (1 - (y - surface) / reach) * Math.min(1, sim.rotorSpeed)
+    if (strength <= 0 || (!sea && ground.surfaceAt(x, z) === 'runway')) return
+    this.washDebt += dt * WASH_RATE * strength
+    while (this.washDebt > 1) {
+      this.washDebt -= 1
+      const angle = Math.random() * Math.PI * 2
+      const out = random(6, 12) * strength
+      const from = random(0.2, 0.6) * rotor.radius
+      this.add({
+        x: x + Math.cos(angle) * from,
+        y: surface + 0.4,
+        z: z + Math.sin(angle) * from,
+        vx: Math.cos(angle) * out,
+        vy: random(0.5, 1.5),
+        vz: Math.sin(angle) * out,
+        life: random(1, 1.8),
+        size: 1.5,
+        growTo: random(4, 6),
+        color: sea ? SPRAY : DUST,
+        opacity: (sea ? 0.35 : 0.25) * strength,
+        drag: 1.2
+      })
+    }
   }
 
   /**
@@ -452,6 +504,39 @@ export class Effects {
     }
   }
 
+  /** A burning flare: a white-hot point with a short wisp of smoke, drawn once a frame. */
+  flare(at: Vector3) {
+    this.add({
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      life: 0.1,
+      size: 5,
+      growTo: 3,
+      color: SPARK,
+      opacity: 1,
+      glow: true
+    })
+    this.add({
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      vx: 0,
+      vy: 0.5,
+      vz: 0,
+      life: random(1.5, 2.5),
+      size: 1,
+      growTo: random(4, 6),
+      color: VAPOUR,
+      fadeTo: ASH,
+      opacity: 0.4,
+      drag: 0.5
+    })
+  }
+
   /** A missile's rocket flame and the white smoke trail it leaves hanging in the air. */
   missileTrail(at: Vector3, dt: number) {
     this.add({
@@ -554,6 +639,51 @@ export class Effects {
     }
   }
 
+  /**
+   * A belly scraping along the ground at `speed` m/s, drawn once a frame: sparks thrown up
+   * behind it and a trail of dust and grey smoke, both fading as it slows.
+   */
+  scrape(at: Vector3, velocity: Vector3, dt: number) {
+    const speed = Math.hypot(velocity.x, velocity.z)
+    const share = Math.min(1, speed / 60)
+    for (let n = Math.round(random(0.5, 1.5) * 220 * share * dt); n > 0; n--) {
+      this.add({
+        x: at.x + random(-2, 2),
+        y: at.y + 0.3,
+        z: at.z + random(-2, 2),
+        vx: velocity.x * random(0.3, 0.8) + random(-4, 4),
+        vy: random(1, 6),
+        vz: velocity.z * random(0.3, 0.8) + random(-4, 4),
+        life: random(0.3, 0.8),
+        size: random(0.3, 0.6),
+        growTo: 0.15,
+        color: SPARK,
+        fadeTo: EMBER,
+        opacity: 1,
+        glow: true,
+        drag: 1.5,
+        gravity: 9.8
+      })
+    }
+    for (let n = Math.round(random(0.5, 1.5) * 30 * share * dt); n > 0; n--) {
+      this.add({
+        x: at.x + random(-3, 3),
+        y: at.y + 0.5,
+        z: at.z + random(-3, 3),
+        vx: random(-1.5, 1.5),
+        vy: random(0.5, 2),
+        vz: random(-1.5, 1.5),
+        life: random(2.5, 4.5),
+        size: random(2, 4),
+        growTo: random(10, 18),
+        color: TYRE_SMOKE,
+        fadeTo: DUST,
+        opacity: 0.5,
+        drag: 0.8
+      })
+    }
+  }
+
   /** Burning wreckage: flames at the base and a rising column of black smoke. */
   burn(at: Vector3, strength: number, dt: number) {
     if (Math.random() < strength * 16 * dt) {
@@ -594,6 +724,26 @@ export class Effects {
     }
     // The fire keeps the surroundings flickering
     this.flash = Math.max(this.flash, strength * random(0.01, 0.025))
+  }
+
+  /** Orange smoke from a distress flare on a boat, drifting downwind. */
+  distressSmoke(at: Vector3) {
+    this.add({
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      vx: random(-0.3, 0.3),
+      vy: 2.5,
+      vz: random(-0.3, 0.3),
+      life: random(5, 8),
+      size: 1.2,
+      growTo: random(8, 12),
+      color: DISTRESS,
+      fadeTo: DISTRESS_FADED,
+      opacity: 0.55,
+      drag: 0.4,
+      gravity: -0.4
+    })
   }
 
   /** Thin smoke shed by a piece of wreckage as it tumbles away. */

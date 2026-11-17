@@ -59,6 +59,28 @@ const FLARE_DAMPING = 6
 const TAIL_MARGIN = 0.03
 const DEROTATE_RATE = -0.03
 const ROLLOUT_END = 15
+// Share added to the approach speed with the flaps stuck fully up
+const FLAPLESS_MARGIN = 0.2
+// Helicopters. With the stability system flying the collective, W climbs at MAX_CLIMB m/s
+// and S descends at MAX_DESCENT, easing to TOUCHDOWN_SINK near the ground at FLARE_RATE m/s
+// per metre of wheel height. Hands off, the height hold climbs at HOLD_GAIN m/s per metre
+// off, up to MAX_HOLD_CLIMB, aiming HOLD_LEAD seconds of climb past where the key was let
+// go. The collective moves COLLECTIVE_GAIN per m/s of climb error, and trims at
+// COLLECTIVE_TRIM_RATE per m/s-second. Below HOLD_ROTOR rotor speed, on the ground, or with
+// the engines out, W and S move the lever by hand at COLLECTIVE_RATE per second. The hold
+// stops raising the lever past TORQUE_LIMIT percent torque.
+const MAX_CLIMB = 7.5
+const MAX_DESCENT = 5
+const TOUCHDOWN_SINK = 0.8
+const FLARE_RATE = 0.3
+const HOLD_GAIN = 0.4
+const MAX_HOLD_CLIMB = 4
+const HOLD_LEAD = 1
+const COLLECTIVE_GAIN = 0.02
+const COLLECTIVE_TRIM_RATE = 0.01
+const COLLECTIVE_RATE = 0.6
+const HOLD_ROTOR = 0.85
+const TORQUE_LIMIT = 98
 
 /** Airliners and the bomber land themselves; fighters and light aircraft hand over at 50 ft. */
 export const canAutoland = (sim: FlightSim) =>
@@ -169,6 +191,13 @@ export class Pilot {
   /** Rudder the yaw damper has built up against a steady slip. */
   private rudderHold = 0
   private lastAirspeed = 0
+  /** Helicopters: the height the collective holds hands off, and the collective that holds it. */
+  private heightHold: number | null = null
+  private collectiveTrim = 0
+  /** True while the stability system worked the collective on the last step. */
+  private collectiveHeld = false
+  /** Helicopters: the climb rate in m/s the autopilot asks the collective for. */
+  private rotorClimb = 0
   private lastFix = 0
   private throttleTrim = 0
   /** Climb rate the level change mode asks for, in m/s. */
@@ -189,6 +218,8 @@ export class Pilot {
     }
     this.landingLights = false
     this.controls.engineSwitches.fill(false)
+    this.heightHold = null
+    this.collectiveHeld = false
     this.disengage()
     this.syncKnobs(sim)
   }
@@ -205,6 +236,8 @@ export class Pilot {
     })
     this.controls.engineSwitches.fill(true)
     if (this.controls.procedures) Object.assign(this.controls.procedures, procedureState(true))
+    this.heightHold = null
+    this.collectiveHeld = false
     this.disengage()
     if (sim) this.syncKnobs(sim)
   }
@@ -285,6 +318,8 @@ export class Pilot {
   }
 
   toggleAutothrottle(sim: FlightSim) {
+    // A helicopter's speed comes from the cyclic trim, so it has no autothrottle
+    if (sim.spec.rotor) return
     this.autothrottle.on = !this.autothrottle.on && !sim.onGround && sim.powered
     if (this.autothrottle.on && this.autothrottle.speed < 1) {
       this.autothrottle.speed = sim.indicatedAirspeed
@@ -327,9 +362,10 @@ export class Pilot {
       autopilot.lateral = 'HDG'
       autopilot.heading = sim.heading
     }
-    autopilot.vertical = mode
+    // A helicopter has no autothrottle to trade speed for height, so level change climbs at a set rate
+    autopilot.vertical = mode === 'FLCH' && sim.spec.rotor ? 'VS' : mode
     autopilot.hold = sim.position.y
-    if (mode === 'VS') {
+    if (autopilot.vertical === 'VS') {
       // Start from the current climb rate, or 1000 ft/min toward the altitude knob
       const toward = Math.sign(autopilot.altitude - sim.position.y) || 1
       const current = Math.round(sim.verticalSpeed / (100 * FPM)) * 100 * FPM
@@ -427,23 +463,33 @@ export class Pilot {
     }
 
     if (analog.throttle !== null && lever === 0) {
+      // A hand on the throttle, or on a helicopter's collective, sets it directly. Letting
+      // go of the collective holds the height from wherever the hand left it.
       this.autothrottle.on = false
+      this.collectiveHeld = false
+      this.heightHold = null
       c.throttle = analog.throttle
-    } else if (this.autothrottle.on) this.flyThrottle(dt, sim, lever)
+    } else if (spec.rotor) this.flyCollective(dt, sim, lever)
+    else if (this.autothrottle.on) this.flyThrottle(dt, sim, lever)
     else c.throttle = clamp(c.throttle + lever * THROTTLE_RATE * dt, 0, 1)
     this.lastAirspeed = airspeed
 
     if (spec.autoFlaps) c.flapNotch = c.gearDown ? spec.flapLabels.length - 1 : 0
     const pedals = this.axis('KeyD', 'KeyA')
     // Without pedals, the stick steers the nose wheel on the ground
-    const steer = analog.noPedals && sim.onGround ? (analog.stick?.roll ?? null) : null
+    const steer =
+      analog.noPedals && sim.onGround && !spec.rotor ? (analog.stick?.roll ?? null) : null
     const handRudder = pedals === 0 ? (analog.yaw ?? steer) : null
     // Without pedals in the air, the yaw damper balances the turns as the autopilot's does
     const damped = autopilot.on || (analog.noPedals && !sim.onGround)
     if (handRudder !== null) {
       c.yaw = handRudder
       this.rudderHold = 0
-    } else if (autopilot.on && pedals === 0 && sim.onGround) {
+    }
+    // A helicopter's stability system holds the heading and balances turns by itself
+    else if (spec.rotor)
+      c.yaw = this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
+    else if (autopilot.on && pedals === 0 && sim.onGround) {
       // Rolling out after an autoland: the rudder steers along the runway
       c.yaw = this.rudderHold
     } else if (damped && pedals === 0) {
@@ -464,8 +510,10 @@ export class Pilot {
       this.rudderHold = 0
     }
     const trim = this.axis('KeyE', 'KeyQ')
-    c.trim = clamp(c.trim + trim * TRIM_RATE * this.ramp('KeyE', 'KeyQ') * dt, -1, 1)
-    c.trim = clamp(c.trim + analog.trim * TRIM_RATE * dt, -1, 1)
+    // A helicopter's trim only holds a forward speed, from a hover (0) to its fastest (-1)
+    const most = spec.rotor ? 0 : 1
+    c.trim = clamp(c.trim + trim * TRIM_RATE * this.ramp('KeyE', 'KeyQ') * dt, -1, most)
+    c.trim = clamp(c.trim + analog.trim * TRIM_RATE * dt, -1, most)
     c.brake = this.held.has('Space') ? 1 : analog.brake
     c.brakeLeft = this.held.has('Comma') ? 1 : 0
     c.brakeRight = this.held.has('Period') ? 1 : 0
@@ -569,6 +617,14 @@ export class Pilot {
       )
     }
 
+    if (spec.rotor) {
+      // The stability system flies the bank; the collective flies the climb
+      const bank = clamp(turnTo(track, target) * 1.2, -AUTOPILOT_BANK, AUTOPILOT_BANK)
+      c.roll = clamp(bank / spec.rotor.maxBank, -1, 1)
+      c.pitch = 0
+      this.rotorClimb = climb
+      return
+    }
     // How hard the aircraft answers a full stick at this speed: roll rate, and extra g
     const flow = Math.max(airspeed, spec.stats.stallSpeed * 0.4)
     const pressure = 0.5 * 1.225 * flow * flow * spec.wingArea
@@ -653,6 +709,47 @@ export class Pilot {
   }
 
   /**
+   * Helicopters: in the air the stability system works the collective. W and S ask for a
+   * climb or descent, and hands off it holds the height, or the autopilot's climb rate. On
+   * the ground, or while the rotor is slow or the engines are out, W and S move the lever by
+   * hand, so it stays where the pilot puts it.
+   */
+  private flyCollective(dt: number, sim: FlightSim, lever: number) {
+    const c = this.controls
+    const able = !sim.onGround && sim.rotorSpeed > HOLD_ROTOR && sim.engineRunning
+    if (!able) {
+      c.throttle = clamp(c.throttle + lever * COLLECTIVE_RATE * dt, 0, 1)
+      this.collectiveHeld = false
+      this.heightHold = null
+      return
+    }
+    // Taking over, start from wherever the lever is
+    if (!this.collectiveHeld) this.collectiveTrim = c.throttle
+    this.collectiveHeld = true
+    const fine = this.held.has('Shift') ? FINE_SHARE : 1
+    let climb = 0
+    if (lever > 0) climb = MAX_CLIMB * fine
+    else if (lever < 0) {
+      const wheels = sim.altitudeAgl - sim.spec.restHeight
+      climb = -Math.min(MAX_DESCENT * fine, Math.max(TOUCHDOWN_SINK, wheels * FLARE_RATE))
+    } else if (this.autopilot.on) climb = this.rotorClimb
+    else {
+      this.heightHold ??= sim.position.y + sim.verticalSpeed * HOLD_LEAD
+      climb = clamp((this.heightHold - sim.position.y) * HOLD_GAIN, -MAX_HOLD_CLIMB, MAX_HOLD_CLIMB)
+    }
+    // A key or the autopilot moves the height; letting go holds wherever it leaves off
+    if (lever !== 0 || this.autopilot.on) this.heightHold = null
+    const error = climb - sim.verticalSpeed
+    // Past full torque more lever only slows the rotor, so the hold raises it no further
+    const torque = Math.max(...sim.engines.map(engine => engine.rpm))
+    const strained = torque > TORQUE_LIMIT || sim.rotorSpeed < 0.99
+    const step = error * COLLECTIVE_TRIM_RATE * dt
+    if (!strained || step < 0) this.collectiveTrim = clamp(this.collectiveTrim + step, 0, 1)
+    const wanted = clamp(this.collectiveTrim + error * COLLECTIVE_GAIN, 0, 1)
+    c.throttle = strained ? Math.min(wanted, c.throttle) : wanted
+  }
+
+  /**
    * Holds the speed knob with the throttle. In a level change it sets climb power going up
    * and idle going down, and the pitch holds the speed instead.
    */
@@ -694,6 +791,14 @@ export class Pilot {
       if (this.autothrottle.on) {
         this.autothrottle.speed = sim.spec.approachSpeed * KNOT * steps[nav.active]
       }
+    }
+    // Flaps that cannot move call for a faster approach, as the wing stalls sooner without them
+    if (this.autothrottle.on && (sim.flapsJammed || sim.hydraulicsFailed)) {
+      const stuck = 1 + (1 - sim.flapPosition) * FLAPLESS_MARGIN
+      this.autothrottle.speed = Math.max(
+        this.autothrottle.speed,
+        sim.spec.approachSpeed * KNOT * stuck
+      )
     }
     if (!nav.onFinal) {
       const fix = approach.fixes[0]
