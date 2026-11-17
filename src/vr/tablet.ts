@@ -98,7 +98,22 @@ type Page = 'fly' | 'missions' | 'checklist' | 'help'
 export type Checklist = { title: string; items: { text: string; done: () => boolean }[] }
 
 /** What the tablet needs from the VR cockpit around it. */
-export type TabletActions = { recenter: () => void; exit: () => void }
+export type TabletActions = {
+  /** Asks for a recenter after a short countdown. */
+  recenter: () => void
+  exit: () => void
+  /** Moves the seat up and back by metres. */
+  adjustSeat: (up: number, back: number) => void
+  /** The seat adjustment, in metres up and back. */
+  seat: () => { up: number; back: number }
+  /** Whole seconds left before a pending recenter, or 0. */
+  recentering: () => number
+}
+
+// Metres the seat moves per tap
+const SEAT_STEP = 0.02
+// Where the seat buttons sit on the flight page, in canvas pixels
+const SEAT_ROW = H - 236
 
 /**
  * A touch screen beside the pilot, after SkyHands' kneeboard tablet: free flight setup,
@@ -391,7 +406,7 @@ export class Tablet {
     const half = (W - 48 - 12) / 2
     if (status === 'paused') {
       this.button('Resume', 24, y, half, 64, game.resume, 'main')
-      this.button('Recenter Seat', 24 + half + 12, y, half, 64, this.actions.recenter)
+      this.button(this.recenterLabel(), 24 + half + 12, y, half, 64, this.actions.recenter)
       y += 80
     } else if (mission && status !== 'menu') {
       this.button('Retry Mission', 24, y, half, 64, game.retryMission, 'main')
@@ -521,7 +536,7 @@ export class Tablet {
   private drawHelp(y: number) {
     const lines = [
       ['Bare hands', ''],
-      ['Grab', 'Pinch or make a fist on the stick, yoke, or a lever'],
+      ['Grab', 'Pinch, or wrap your middle and ring fingers round a control'],
       ['Press', 'Poke a button with your fingertip, or pinch it'],
       ['Steer', 'On the ground the stick steers the nose wheel'],
       ['Controllers', ''],
@@ -542,9 +557,39 @@ export class Tablet {
       this.text(name, 24, y, 19, INK, 700)
       y = this.paragraph(what, 170, y, 19, INK, 2) + 4
     }
+    this.seatRow(H - 160)
     const half = (W - 48 - 12) / 2
-    this.button('Recenter Seat', 24, H - 84, half, 60, this.actions.recenter)
+    this.button(this.recenterLabel(), 24, H - 84, half, 60, this.actions.recenter)
     this.button('Exit VR', 24 + half + 12, H - 84, half, 60, this.actions.exit)
+  }
+
+  private recenterLabel() {
+    const seconds = this.actions.recentering()
+    return seconds > 0 ? `Look Ahead: ${seconds}` : 'Recenter Seat'
+  }
+
+  /** Four small buttons that move the seat, and where it is now. */
+  private seatRow(y: number) {
+    const { up, back } = this.actions.seat()
+    const cm = (metres: number) => Math.round(metres * 100)
+    const where = [
+      up === 0 ? '' : `${Math.abs(cm(up))} cm ${up > 0 ? 'up' : 'down'}`,
+      back === 0 ? '' : `${Math.abs(cm(back))} cm ${back > 0 ? 'back' : 'forward'}`
+    ].filter(Boolean)
+    this.text(`Seat: ${where.length ? where.join(', ') : 'centred'}`, 24, y - 30, 18, MUTED)
+    const quarter = (W - 48 - 24) / 4
+    const step = SEAT_STEP
+    const seatButtons: [string, number, number][] = [
+      ['Up', step, 0],
+      ['Down', -step, 0],
+      ['Closer', 0, -step],
+      ['Farther', 0, step]
+    ]
+    seatButtons.forEach(([label, up, back], i) => {
+      this.button(label, 24 + i * (quarter + 8), y, quarter, 56, () =>
+        this.actions.adjustSeat(up, back)
+      )
+    })
   }
 
   /** In flight: the mission step or landing advice, and the pause and seat buttons. */
@@ -592,6 +637,8 @@ export class Tablet {
       y += 80
       mission.objectives.forEach((objective, i) => {
         if (i < runner.step - 1 || i > runner.step + 2) return
+        // Room ends above the seat buttons
+        if (y > SEAT_ROW - 70) return
         const done = i < runner.step
         const color = done ? MUTED : i === runner.step ? INK : MUTED
         y =
@@ -640,8 +687,9 @@ export class Tablet {
       }
     }
     const half = (W - 48 - 12) / 2
+    this.seatRow(SEAT_ROW)
     this.button('Pause', 24, H - 160, half, 64, game.pause, 'main')
-    this.button('Recenter Seat', 24 + half + 12, H - 160, half, 64, this.actions.recenter)
+    this.button(this.recenterLabel(), 24 + half + 12, H - 160, half, 64, this.actions.recenter)
     this.button(state.muted ? 'Sound Off' : 'Sound On', 24, H - 86, half, 60, game.toggleMuted)
     this.button(state.coach ? 'Coach On' : 'Coach Off', 24 + half + 12, H - 86, half, 60, () =>
       game.setCoach(!state.coach)

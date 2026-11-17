@@ -24,7 +24,7 @@ The Quest Browser allows VR only over HTTPS, so the dev server needs a local cer
 5. The certificate is self-signed, so the browser warns you. Select **Advanced**, then **Proceed**.
 6. Pick an aircraft and a start on the page, or skip that and use the tablet in VR.
 7. Select **Enter VR** in the bottom-right corner, sit in a chair, and look straight ahead.
-8. If the seat feels off, sit up, look forward, and tap **Recenter Seat** on the tablet.
+8. If the seat feels off, tap **Recenter Seat** on the tablet, then sit up and look straight ahead during the countdown.
 
 Run `bun run certs` again if your Mac's network address changes.
 
@@ -54,20 +54,39 @@ The kneeboard on your left thigh carries the 172S checklists. Each item ticks it
 
 The Cessna flies to its handbook numbers at full weight: stalls at 53 kt clean and 48 kt with full flaps, climbs 730 ft/min, cruises at 124 kt at 8,000 ft, glides 9 to 1, takes off in about 960 ft, and stops in about 575 ft.
 
-## The Other Cockpits
+## Every Aircraft's Own Cockpit
 
-Every other aircraft gets the same layout, with the flight control its real pilot uses:
+Every aircraft has a life-size cockpit modelled on the real one, with its own controls in their real places:
 
-- **Yoke:** Cessna 172, Boeing 737 and 787, and Concorde.
-- **Left sidestick:** Airbus A320 and A380.
-- **Right sidestick:** F-16 and F-35.
-- **Centre stick:** P-51 Mustang, B-2, and the Space Shuttle.
+- **Airbus A320 and A380:** left sidestick, flight control unit on the glareshield, six displays, overhead panel, and a pedestal with notched thrust levers, speedbrake, flaps, and engine master switches.
+- **Boeing 737 MAX and 787:** yokes, the mode control panel, big landscape displays, the 787's head-up display, overhead panels, and the pedestal with thrust levers, speedbrake, flaps, and start levers.
+- **Concorde:** ram's-horn yokes, a dense analog panel with gauges for all four engines, the droop nose and visor lever, and four throttles with reheat.
+- **F-16 and F-35:** right sidestick, left throttle with an afterburner notch, the F-16's head-up display and the F-35's wide panoramic display, master arm, and weapons release.
+- **P-51 Mustang:** the WWII steam gauge panel, the K-14 gunsight, a central stick, and the throttle quadrant.
+- **B-2:** two seats, nine colour displays, four throttles, and the bomb sight and release.
+- **Space Shuttle:** the hand controller between your knees, the speedbrake handle, nine displays, the head-up display, and overhead switch panels.
+- **UH-60 Black Hawk:** you sit right, as in the real aircraft. The cyclic is between your knees and the collective on your left, with four displays, the overhead engine levers, and chin windows to see the ground.
 
-The throttle, flap, and speed brake levers stand on the console on the opposite side from the stick. The red brake handle sits on the left console. The gear lever sits on the panel, right of the buttons.
+Throttle levers move with the autothrottle, and the stick or yoke moves when the autopilot flies, as in the real aircraft. A firm push on it takes over.
 
-The panel has two screens. The left one shows attitude, speed, altitude, climb rate, heading, and autopilot modes. The right one shows warning lamps, engines, levers, gear, fuel, the approach, and weapons. A red master warning light flashes on the glareshield for any warning.
+The tablet replaces the page's menus. Use it to set up a free flight, pick a mission, pause, read the landing coach and checklists, and see your result.
 
-The tablet on the left wall replaces the page's menus. Use it to set up a free flight, pick a mission, pause, read the landing coach, and see your result.
+## Seat and Recenter
+
+- **Recenter Seat** on the tablet counts down three seconds first. Sit up and look straight ahead before it reaches zero, since that sets which way is forward.
+- **Up**, **Down**, **Closer**, and **Farther** on the tablet move the seat 2 cm per tap, up to 25 cm each way. The game remembers your setting.
+- Holding the Quest's Meta button also recenters, at once.
+
+## Preview the Cockpit Without a Headset
+
+Press **C** on the page to cycle the views: chase, classic cockpit, and pilot seat. The pilot seat view shows exactly the VR cockpit:
+
+- **Look:** drag over empty space.
+- **Switches and buttons:** click them.
+- **Levers, stick, and yoke:** click and drag.
+- **Knobs and the key:** hold the click and scroll.
+
+The keyboard still flies the aircraft.
 
 ## Flying With Your Hands
 

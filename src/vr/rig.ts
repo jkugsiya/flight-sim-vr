@@ -1,4 +1,15 @@
-import { type Camera, Group, type PerspectiveCamera, Vector3, type WebGLRenderer } from 'three'
+import {
+  type Camera,
+  CanvasTexture,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  type PerspectiveCamera,
+  PlaneGeometry,
+  SRGBColorSpace,
+  Vector3,
+  type WebGLRenderer
+} from 'three'
 import { game } from '../game/game'
 import { heightAt } from '../world/island'
 import type { CockpitView } from './cockpit'
@@ -19,6 +30,87 @@ const other = new Vector3()
 const VR_NEAR = 0.03
 // Metres above the ground the view stays after a crash
 const CRASH_HEIGHT = 3
+// Seconds to sit up and look ahead after asking for a recenter
+const RECENTER_SECONDS = 3
+// Furthest the seat adjusts each way, in metres. Up is shortest: in the tightest cockpits,
+// such as Concorde's, the roof is about 20 cm above the eye.
+const SEAT_TRAVEL = 0.25
+const SEAT_RISE = 0.12
+const SEAT_KEY = 'vr-seat'
+
+/** The pilot's saved seat adjustment, or none. Storage may be blocked; then it starts level. */
+function loadSeat() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SEAT_KEY) ?? '{}') as {
+      up?: unknown
+      back?: unknown
+    }
+    const number = (value: unknown) =>
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(-SEAT_TRAVEL, Math.min(SEAT_TRAVEL, value))
+        : 0
+    return { up: Math.min(SEAT_RISE, number(saved.up)), back: number(saved.back) }
+  } catch {
+    return { up: 0, back: 0 }
+  }
+}
+
+function saveSeat(seat: { up: number; back: number }) {
+  try {
+    localStorage.setItem(SEAT_KEY, JSON.stringify(seat))
+  } catch {
+    // Without storage the adjustment lasts for this session only
+  }
+}
+
+/** The countdown prompt floating ahead of the pilot while a recenter is pending. */
+class Prompt {
+  readonly mesh: Mesh
+  private readonly ctx: CanvasRenderingContext2D | null
+  private readonly texture: CanvasTexture
+  private shown = 0
+
+  constructor() {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1024
+    canvas.height = 192
+    this.ctx = canvas.getContext('2d')
+    this.texture = new CanvasTexture(canvas)
+    this.texture.colorSpace = SRGBColorSpace
+    this.mesh = new Mesh(
+      new PlaneGeometry(0.4, 0.075),
+      new MeshBasicMaterial({
+        map: this.texture,
+        transparent: true,
+        depthTest: false,
+        toneMapped: false
+      })
+    )
+    this.mesh.renderOrder = 20
+    this.mesh.position.set(0, 0.02, -0.6)
+    this.mesh.visible = false
+  }
+
+  /** Shows the seconds left, or hides at 0. */
+  show(seconds: number) {
+    this.mesh.visible = seconds > 0
+    if (seconds === this.shown || !this.ctx) return
+    this.shown = seconds
+    const ctx = this.ctx
+    ctx.clearRect(0, 0, 1024, 192)
+    if (seconds === 0) return
+    ctx.fillStyle = 'rgba(12, 16, 20, 0.85)'
+    ctx.beginPath()
+    ctx.roundRect(8, 8, 1008, 176, 28)
+    ctx.fill()
+    ctx.fillStyle = '#f2f4f5'
+    ctx.font = '700 64px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(`Sit up and look straight ahead: ${seconds}`, 512, 96, 980)
+    this.texture.needsUpdate = true
+  }
+}
 // Vertical field of view of the seat view on the page, in degrees: wide, as a headset's is
 const PREVIEW_FOV = 80
 
@@ -39,6 +131,13 @@ export class Rig {
   private cockpit: CockpitView | null = null
   private camera: PerspectiveCamera | null = null
   private recenterIn = 0
+  /** Seconds left before a recenter the pilot asked for, with a prompt to look ahead. */
+  private countdown = 0
+  /** The flight the cockpit was built for. */
+  private builtFor = -1
+  private readonly prompt: Prompt
+  /** The pilot's own seat adjustment, in metres up and back from the eye point. */
+  private readonly seatOffset = loadSeat()
   private crashView = false
   private time = 0
   /** True while the seat shows on the page rather than in the headset. */
@@ -49,7 +148,15 @@ export class Rig {
     this.seat.add(this.dolly)
     this.seat.visible = false
     this.input = new XRInput(gl, this.dolly)
-    this.tablet = new Tablet({ recenter: () => this.recenter(), exit: exitVR })
+    this.tablet = new Tablet({
+      recenter: () => this.requestRecenter(),
+      exit: exitVR,
+      adjustSeat: (up, back) => this.adjustSeat(up, back),
+      seat: () => this.seatOffset,
+      recentering: () => Math.ceil(this.countdown)
+    })
+    this.prompt = new Prompt()
+    this.seat.add(this.prompt.mesh)
     this.seat.add(this.tablet.group)
     gl.xr.addEventListener('sessionstart', this.start)
     gl.xr.addEventListener('sessionend', this.end)
@@ -84,6 +191,7 @@ export class Rig {
   }
 
   private readonly end = () => {
+    this.countdown = 0
     // A bomb string started with the trigger must not run on in the desktop game
     game.endRelease()
     const camera = this.camera
@@ -104,6 +212,36 @@ export class Rig {
     if (event.session.visibilityState !== 'visible') game.pause()
   }
 
+  /**
+   * Recenters after a short countdown. The button is on the tablet, off to one side, so
+   * this gives the pilot time to sit up and look ahead before forward is taken from the head.
+   */
+  requestRecenter() {
+    // On the page the view is the mouse's, so recentering just looks straight ahead
+    if (this.previewing) {
+      this.mouse?.lookAhead()
+      return
+    }
+    this.countdown = RECENTER_SECONDS
+  }
+
+  /**
+   * Moves the seat up or down and toward or away from the panel, in metres, as a pilot
+   * adjusts a real seat. The setting is remembered for the next session.
+   */
+  adjustSeat(up: number, back: number) {
+    const clampTo = (value: number) => Math.max(-SEAT_TRAVEL, Math.min(SEAT_TRAVEL, value))
+    const nextUp = Math.min(SEAT_RISE, clampTo(this.seatOffset.up + up))
+    const nextBack = clampTo(this.seatOffset.back + back)
+    // Raising the seat raises the eye, so the cockpit moves down around it
+    this.dolly.position.y += nextUp - this.seatOffset.up
+    this.dolly.position.z += nextBack - this.seatOffset.back
+    this.seatOffset.up = nextUp
+    this.seatOffset.back = nextBack
+    saveSeat(this.seatOffset)
+    this.tablet.refresh()
+  }
+
   /** Puts the pilot's head at the eye point, facing forward, wherever they sit in the room. */
   recenter() {
     const camera = this.camera
@@ -120,6 +258,9 @@ export class Rig {
     const yaw = Math.atan2(-forward.x, -forward.z)
     this.dolly.quaternion.setFromAxisAngle(UP, -yaw)
     this.dolly.position.copy(head).applyQuaternion(this.dolly.quaternion).multiplyScalar(-1)
+    // The pilot's own seat adjustment on top
+    this.dolly.position.y += this.seatOffset.up
+    this.dolly.position.z += this.seatOffset.back
     this.tablet.refresh()
   }
 
@@ -128,7 +269,8 @@ export class Rig {
     const camera = this.camera
     if (!camera) return
     this.previewing = true
-    this.dolly.position.set(0, 0, 0)
+    // The pilot's own seat adjustment applies on the page too
+    this.dolly.position.set(0, this.seatOffset.up, this.seatOffset.back)
     this.dolly.quaternion.identity()
     this.dolly.add(camera)
     camera.near = VR_NEAR
@@ -168,7 +310,9 @@ export class Rig {
     }
     if (!presenting && !this.previewing) this.startPreview()
     const { sim } = game
-    if (this.cockpit?.spec !== sim.spec) {
+    // A fresh cockpit for each aircraft and each flight, so no switch or handle carries over
+    if (this.cockpit?.spec !== sim.spec || this.builtFor !== game.flight) {
+      this.builtFor = game.flight
       this.cockpit?.dispose()
       this.cockpit = cockpitFor(sim.spec, feel)
       this.seat.add(this.cockpit.group)
@@ -178,6 +322,17 @@ export class Rig {
     const cockpit = this.cockpit
     this.placeSeat()
     if (this.recenterIn > 0 && --this.recenterIn === 0) this.recenter()
+    if (this.countdown > 0) {
+      const before = Math.ceil(this.countdown)
+      this.countdown -= dt
+      if (this.countdown <= 0) {
+        this.countdown = 0
+        this.recenter()
+      }
+      // The tablet shows the whole seconds, so it redraws only when they change
+      if (Math.ceil(this.countdown) !== before) this.tablet.refresh()
+    }
+    this.prompt.show(this.countdown > 0 ? Math.ceil(this.countdown) : 0)
 
     this.time += dt
     let interactors = this.input.update(dt)

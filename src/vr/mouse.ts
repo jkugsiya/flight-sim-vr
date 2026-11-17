@@ -112,6 +112,12 @@ export class MouseInput {
     this.interactor.active = false
   }
 
+  /** Looks straight ahead again. */
+  lookAhead() {
+    this.yaw = 0
+    this.pitch = -0.2
+  }
+
   /** Points the camera where the mouse has looked; the camera sits at the eye point. */
   aim() {
     this.camera.position.set(0, 0, 0)

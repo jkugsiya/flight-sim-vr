@@ -101,7 +101,8 @@ function dialTools(ctx: CanvasRenderingContext2D, s: number) {
 const BEZEL = new MeshStandardMaterial({ color: 0x141517, roughness: 0.5, metalness: 0.3 })
 const NEEDLE = new MeshBasicMaterial({ color: 0xf4f4f0, toneMapped: false })
 const ORANGE = new MeshBasicMaterial({ color: 0xff8a1c, toneMapped: false })
-const SHARED = new Set<Material>([BEZEL, NEEDLE, ORANGE])
+/** Materials every instrument shares, which outlive any one cockpit. */
+export const SHARED = new Set<Material>([BEZEL, NEEDLE, ORANGE])
 
 /** A tapered needle along +Y from the pivot, with a short tail behind it. */
 function needleGeometry(length: number, width: number, tail = length * 0.18) {

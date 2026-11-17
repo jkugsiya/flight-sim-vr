@@ -28,6 +28,7 @@ import {
   type Stick,
   type Yoke
 } from './controls'
+import { SHARED as INSTRUMENT_MATERIALS } from './gauges'
 import type { Interactor } from './input'
 import type { Checklist } from './tablet'
 
@@ -59,7 +60,19 @@ export const MATERIALS = {
     depthWrite: false
   })
 }
-const KEPT = new Set<Material>([...SHARED_MATERIALS, ...Object.values(MATERIALS)])
+const KEPT = new Set<Material>([
+  ...SHARED_MATERIALS,
+  ...Object.values(MATERIALS),
+  ...INSTRUMENT_MATERIALS
+])
+
+/**
+ * Marks materials a cockpit file shares between its builds, so disposing one cockpit
+ * leaves them for the next instead of compiling them again.
+ */
+export function keepMaterials(...materials: Material[]) {
+  for (const material of materials) KEPT.add(material)
+}
 
 /** Placard pixels per metre: enough for 8 mm lettering to read at arm's length. */
 const PLACARD_RESOLUTION = 2000
@@ -213,7 +226,8 @@ export class Deck {
     display.mesh.quaternion.copy(panel.face)
     // A dark bezel round it
     const bezel = new Mesh(new BoxGeometry(width + 0.016, height + 0.016, 0.006), MATERIALS.black)
-    bezel.position.copy(panel.at(u, v, 0))
+    // The bezel's face stays 2 mm behind the screen, so the two never flicker against each other
+    bezel.position.copy(panel.at(u, v, -0.002))
     bezel.quaternion.copy(panel.face)
     this.group.add(bezel, display.mesh)
     this.displays.push(display)

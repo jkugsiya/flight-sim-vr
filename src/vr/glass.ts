@@ -313,7 +313,8 @@ export function helicopterDisplay(ctx: CanvasRenderingContext2D, w: number, h: n
     ctx.fillStyle = '#20262c'
     ctx.fillRect(x - w * 0.06, top, w * 0.12, height)
     const fill = Math.max(0, Math.min(1.1, share)) / 1.1
-    ctx.fillStyle = share > 1 ? RED : color
+    // Red only well past the 100% mark, as a governed rotor sits at 100%
+    ctx.fillStyle = share > 1.05 ? RED : color
     ctx.fillRect(x - w * 0.06, top + height * (1 - fill), w * 0.12, height * fill)
     // 100% mark
     ctx.fillStyle = WHITE
