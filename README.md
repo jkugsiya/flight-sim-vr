@@ -131,6 +131,13 @@ Your view rolls and pitches with the aircraft, as in a real cockpit. If that mak
 
 VR uses the Low graphics preset to hold the Quest's 72 frames per second. Your desktop graphics settings come back when you take the headset off.
 
+The headset draws every object twice, once per eye, so VR also trims what it draws:
+
+- Ground beyond 1.5 km uses fewer triangles, coarser with distance.
+- Other airliners and airport buildings beyond 12 km are left out.
+- Jet bridges, windsocks, and runway numbers beyond 4 km are left out.
+- Trees beyond 8 km are left out.
+
 ## Development
 
 ```sh

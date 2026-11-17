@@ -17,6 +17,7 @@ import {
   Vector3
 } from 'three'
 import { game } from '../game/game'
+import { mergeStill } from '../scene/merge'
 import type { AircraftSpec } from '../sim/aircraft'
 import { bestMixture, MIXTURE_CUTOFF, type Procedures, procedureState } from '../sim/flight-sim'
 import { FEET_PER_METRE, FPM_PER_MS, KNOTS_PER_MS } from '../ui/telemetry'
@@ -256,7 +257,7 @@ export class CessnaCockpit implements CockpitView {
       avionics: running || c.battery
     }
     const procedures = c.procedures
-    this.buildCabin()
+    const cabin = this.buildCabin()
     this.buildEngine()
 
     // Six-pack: airspeed, attitude, altimeter over turn coordinator, heading, climb rate
@@ -643,6 +644,8 @@ export class CessnaCockpit implements CockpitView {
     this.yoke = new Yoke(g, buzz, new Vector3(0, -0.32, -0.47), new Vector3(2 * C, -0.32, -0.47))
     all.push(this.yoke)
 
+    // The cabin and the switch surrounds never move, so each material draws in one call
+    mergeStill([...cabin, ...all.flatMap(control => control.still)], g)
     this.controls = new ControlSet(all, g)
     this.buildPlacards(labels)
     this.checklists = this.buildChecklists(procedures)
@@ -902,8 +905,10 @@ export class CessnaCockpit implements CockpitView {
   }
 
   /** Panel, glareshield, pedestal, floor, seats, walls, window frames, roof, and pedals. */
+  /** Builds the cabin, and returns its parts that never move. */
   private buildCabin() {
     const g = this.group
+    const still: Mesh[] = []
     const box = (
       w: number,
       h: number,
@@ -916,6 +921,7 @@ export class CessnaCockpit implements CockpitView {
       const mesh = new Mesh(new BoxGeometry(w, h, d), material)
       mesh.position.set(x, y, z)
       g.add(mesh)
+      still.push(mesh)
       return mesh
     }
     const width = RIGHT_WALL - LEFT_WALL
@@ -968,6 +974,7 @@ export class CessnaCockpit implements CockpitView {
       )
       breaker.position.set(0.54 + i * 0.024, -0.36, PANEL_Z + 0.005)
       g.add(breaker)
+      still.push(breaker)
     }
     this.selectorPlacard()
     // Rudder pedals for both seats, which move with the rudder
@@ -982,6 +989,7 @@ export class CessnaCockpit implements CockpitView {
         this.pedals.push(pedal)
       }
     }
+    return still
   }
 
   /** The plate under the fuel selector, marked with its positions. */

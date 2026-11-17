@@ -14,6 +14,7 @@ import {
   Vector3
 } from 'three'
 import { game } from '../game/game'
+import { mergeStill } from '../scene/merge'
 import type { AircraftSpec } from '../sim/aircraft'
 import type { CockpitView } from './cockpit'
 import {
@@ -162,6 +163,8 @@ export class Deck {
   private readonly displays: Display[] = []
   private readonly instruments: Updatable[] = []
   private readonly textures: Texture[] = []
+  /** Boxes, beams, boards, and bezels: the shell that never moves, merged by `finish`. */
+  private readonly still = new Set<Mesh>()
 
   constructor(readonly buzz: Buzz) {}
 
@@ -176,6 +179,7 @@ export class Deck {
     mesh.position.set(...at)
     mesh.rotation.set(...rotation)
     this.group.add(mesh)
+    this.still.add(mesh)
     return mesh
   }
 
@@ -186,6 +190,7 @@ export class Deck {
     mesh.position.copy(from).addScaledVector(span, 0.5)
     mesh.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), span.normalize())
     this.group.add(mesh)
+    this.still.add(mesh)
     return mesh
   }
 
@@ -206,6 +211,7 @@ export class Deck {
     board.position.copy(panel.at(0, 0, -depth / 2))
     board.quaternion.copy(panel.face)
     this.group.add(board)
+    this.still.add(board)
     this.panels.push(panel)
     return panel
   }
@@ -230,6 +236,7 @@ export class Deck {
     bezel.position.copy(panel.at(u, v, -0.002))
     bezel.quaternion.copy(panel.face)
     this.group.add(bezel, display.mesh)
+    this.still.add(bezel)
     this.displays.push(display)
     display.draw()
     return display
@@ -375,6 +382,17 @@ export class Deck {
       placard.quaternion.copy(panel.face)
       this.group.add(placard)
     }
+    // A shell part a cockpit moved into a group of its own, or made see-through, stays apart
+    const shell = [...this.still].filter(
+      mesh =>
+        mesh.parent === this.group &&
+        mesh.visible &&
+        mesh.renderOrder === 0 &&
+        !(mesh.material as Material).transparent
+    )
+    const surrounds = this.controls.flatMap(control => control.still)
+    mergeStill([...shell, ...surrounds], this.group)
+    this.still.clear()
     return new ControlSet(this.controls, this.group)
   }
 

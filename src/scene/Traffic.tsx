@@ -4,6 +4,8 @@ import { CircleGeometry, CylinderGeometry, Group, Mesh, MeshStandardMaterial } f
 import { game } from '../game/game'
 import type { OtherAircraft } from '../game/traffic'
 import { airlinerParts } from './Aircraft'
+import { eye, VR_DETAIL_RANGE } from './eye'
+import { mergeStill } from './merge'
 
 const QUARTER_TURN = Math.PI / 2
 const DARK = new MeshStandardMaterial({ color: '#1e2226', roughness: 0.6 })
@@ -77,6 +79,19 @@ function buildAirliner(craft: OtherAircraft) {
     wheels.position.set(x, -craft.gearHeight + tyre, z)
   }
   aircraft.add(gear)
+  // The airframe and the gear each draw as one mesh per material
+  const meshes = (root: Group) => {
+    const found: Mesh[] = []
+    root.traverse(object => {
+      if (object instanceof Mesh) found.push(object)
+    })
+    return found
+  }
+  mergeStill(meshes(gear), gear)
+  mergeStill(
+    meshes(aircraft).filter(mesh => mesh.parent !== gear),
+    aircraft
+  )
   return { craft, aircraft, gear }
 }
 
@@ -87,8 +102,10 @@ export function TrafficAircraft() {
     []
   )
   useFrame(() => {
+    // In VR an airliner farther than this is a speck in the haze, not worth drawing twice
+    const range = game.getState().vr ? VR_DETAIL_RANGE : Number.POSITIVE_INFINITY
     for (const { craft, aircraft, gear } of fleet) {
-      aircraft.visible = craft.visible
+      aircraft.visible = craft.visible && craft.position.distanceTo(eye) < range
       aircraft.position.copy(craft.position)
       aircraft.quaternion.copy(craft.orientation)
       gear.visible = !craft.airborne

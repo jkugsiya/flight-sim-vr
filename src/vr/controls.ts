@@ -68,6 +68,8 @@ export abstract class Control {
   private readonly unface = new Quaternion()
   private readonly glowing: MeshStandardMaterial[] = []
   private highlight = 0
+  /** Parts that never move, such as a switch's surround, which the cockpit may merge. */
+  readonly still: Mesh[] = []
 
   constructor(
     readonly group: Group,
@@ -211,6 +213,7 @@ export class Button extends Control {
       this.cap.add(lamp)
     }
     mount.add(plate, this.cap)
+    this.still.push(plate)
   }
 
   tooltip() {
@@ -679,6 +682,7 @@ export class Rocker extends Control {
     )
     this.rocker.position.z = 0.005
     mount.add(plate, this.rocker)
+    this.still.push(plate)
   }
 
   tooltip() {
@@ -742,6 +746,7 @@ export class Key extends Control {
     this.head = new Mesh(new BoxGeometry(0.008, 0.03, 0.012), this.glowMaterial(0xb8b8b0))
     this.head.position.z = 0.014
     mount.add(switchFace, this.head)
+    this.still.push(switchFace)
   }
 
   tooltip() {

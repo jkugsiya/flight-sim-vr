@@ -171,9 +171,15 @@ export function Lights() {
 
 // The terrain and the forests are each split into this many regions per side
 const TERRAIN_REGIONS = 8
+// In VR, a terrain region at least this many metres from the eye draws every 2nd, 4th, or
+// 8th vertex: about a quarter, a twelfth, or a thirtieth of the triangles
+const COARSE_STEPS = [2, 4, 8]
+const COARSE_FROM = [1500, 6000, 18_000]
 const FOREST_REGIONS = 12
 // Forests farther than this from the camera are lost in the haze, so they are not drawn
 const FOREST_RANGE = 22_000
+// In VR a tree beyond this covers under 2 headset pixels, and each one is drawn twice
+const VR_FOREST_RANGE = 8000
 
 function buildTerrain() {
   const side = GRID + 1
@@ -221,7 +227,7 @@ function buildTerrain() {
   // Cut the terrain into square regions that share one set of vertices.
   // The renderer then skips every region that is out of view.
   const cells = GRID / TERRAIN_REGIONS
-  const regions: BufferGeometry[] = []
+  const regions: { levels: BufferGeometry[]; x: number; z: number; half: number }[] = []
   for (let regionJ = 0; regionJ < TERRAIN_REGIONS; regionJ++) {
     for (let regionI = 0; regionI < TERRAIN_REGIONS; regionI++) {
       const region = new BufferGeometry()
@@ -244,18 +250,60 @@ function buildTerrain() {
       }
       region.setIndex(new BufferAttribute(picked, 1))
       const width = cells * CELL
+      const x = (regionI + 0.5) * width - WORLD_SIZE / 2
+      const z = (regionJ + 0.5) * width - WORLD_SIZE / 2
       region.boundingSphere = new Sphere(
-        new Vector3(
-          (regionI + 0.5) * width - WORLD_SIZE / 2,
-          (low + high) / 2,
-          (regionJ + 0.5) * width - WORLD_SIZE / 2
-        ),
+        new Vector3(x, (low + high) / 2, z),
         Math.hypot(width * 0.75, (high - low) / 2 + 60)
       )
-      regions.push(region)
+      const levels = [region]
+      for (const step of COARSE_STEPS) {
+        const coarse = new BufferGeometry()
+        for (const name of ['position', 'color', 'normal']) {
+          coarse.setAttribute(name, whole.getAttribute(name))
+        }
+        coarse.setIndex(coarseIndices(regionI * cells, regionJ * cells, cells, step))
+        coarse.boundingSphere = region.boundingSphere
+        levels.push(coarse)
+      }
+      regions.push({ levels, x, z, half: width / 2 })
     }
   }
   return regions
+}
+
+/**
+ * Triangles for one terrain region that use every `step`th vertex. Cells along the region's
+ * edge fan out from their middle to every vertex on that edge, so the region meets its
+ * neighbours without gaps whatever detail they draw at.
+ */
+function coarseIndices(i0: number, j0: number, cells: number, step: number) {
+  const side = GRID + 1
+  const vertex = (i: number, j: number) => j * side + i
+  const n = cells / step
+  const out: number[] = []
+  const ring: number[] = []
+  for (let b = 0; b < n; b++) {
+    for (let a = 0; a < n; a++) {
+      const i = i0 + a * step
+      const j = j0 + b * step
+      if (a > 0 && b > 0 && a < n - 1 && b < n - 1) {
+        out.push(vertex(i, j), vertex(i, j + step), vertex(i + step, j))
+        out.push(vertex(i + step, j), vertex(i, j + step), vertex(i + step, j + step))
+        continue
+      }
+      // Round the cell's four sides, in the same turning order as the triangles above
+      const pace = (edge: boolean) => (edge ? 1 : step)
+      ring.length = 0
+      for (let k = 0; k < step; k += pace(a === 0)) ring.push(vertex(i, j + k))
+      for (let k = 0; k < step; k += pace(b === n - 1)) ring.push(vertex(i + k, j + step))
+      for (let k = step; k > 0; k -= pace(a === n - 1)) ring.push(vertex(i + step, j + k))
+      for (let k = step; k > 0; k -= pace(b === 0)) ring.push(vertex(i + k, j))
+      const middle = vertex(i + step / 2, j + step / 2)
+      for (let k = 0; k < ring.length; k++) out.push(middle, ring[k], ring[(k + 1) % ring.length])
+    }
+  }
+  return new BufferAttribute(new Uint32Array(out), 1)
 }
 
 const TERRAIN_COLOR = /* glsl */ `
@@ -329,12 +377,27 @@ export function Terrain() {
   const regions = useMemo(
     () =>
       buildTerrain().map(region => {
-        const mesh = new Mesh(region, material)
+        const mesh = new Mesh(region.levels[0], material)
         mesh.receiveShadow = true
-        return mesh
+        return { ...region, mesh }
       }),
     [material]
   )
+  // In VR every triangle is drawn twice, so regions away from the eye draw coarser
+  useFrame(() => {
+    const vr = game.getState().vr
+    for (const { levels, x, z, half, mesh } of regions) {
+      let level = 0
+      if (vr) {
+        const distance = Math.hypot(
+          Math.max(Math.abs(eye.x - x) - half, 0),
+          Math.max(Math.abs(eye.z - z) - half, 0)
+        )
+        while (level < COARSE_FROM.length && distance >= COARSE_FROM[level]) level++
+      }
+      if (mesh.geometry !== levels[level]) mesh.geometry = levels[level]
+    }
+  })
   const detailed = useGame(state => state.graphics.ground)
   useEffect(() => {
     material.defines = detailed ? { GROUND_DETAIL: '' } : {}
@@ -346,7 +409,7 @@ export function Terrain() {
     material.color.setScalar(wet ? 0.72 : 1)
     material.roughness = wet ? 0.7 : 0.96
   }, [material, wet])
-  return regions.map(region => <primitive key={region.uuid} object={region} />)
+  return regions.map(({ mesh }) => <primitive key={mesh.uuid} object={mesh} />)
 }
 
 const SEA_VERTEX = /* glsl */ `
@@ -639,10 +702,11 @@ export function Trees() {
     }
   }, [forests, fewer])
   useFrame(() => {
+    const range = game.getState().vr ? VR_FOREST_RANGE : FOREST_RANGE
     for (const trees of forests) {
       const region = trees.boundingSphere
       if (!region) continue
-      trees.visible = region.center.distanceTo(eye) < region.radius + FOREST_RANGE
+      trees.visible = region.center.distanceTo(eye) < region.radius + range
     }
   })
   return (

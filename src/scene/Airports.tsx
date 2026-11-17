@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber'
-import { useMemo, useRef } from 'react'
+import { type ReactNode, useMemo, useRef } from 'react'
 import {
   BufferAttribute,
   BufferGeometry,
@@ -25,6 +25,7 @@ import {
   type Stand,
   type Strip
 } from '../world/island'
+import { eye, VR_DETAIL_RANGE } from './eye'
 import { depthBias } from './logDepth'
 
 const QUARTER_TURN = Math.PI / 2
@@ -383,6 +384,35 @@ function JetBridge({ stand, base, terminal }: { stand: Stand; base: number; term
   )
 }
 
+// In VR, jet bridges, windsocks, and runway numbers farther than this are a pixel or two
+const VR_SMALL_RANGE = 4000
+
+/**
+ * Part of an airport that VR leaves out beyond `range` metres, plus about a runway's
+ * length to its edge, where it would cost a draw per eye for a few pixels.
+ */
+function AirportDetail({
+  airport,
+  range,
+  children
+}: {
+  airport: Airport
+  range: number
+  children: ReactNode
+}) {
+  const group = useRef<Group>(null)
+  const centre = useMemo(() => {
+    const runway = airport.runways[0]
+    return new Vector3(runway.x, airport.elevation, runway.z)
+  }, [airport])
+  const reach = range + airport.runways[0].length
+  useFrame(() => {
+    if (!group.current) return
+    group.current.visible = !game.getState().vr || centre.distanceTo(eye) < reach
+  })
+  return <group ref={group}>{children}</group>
+}
+
 // Each flat layer is drawn this share of its distance nearer than the one below, so taxiways
 // sit on the ground, runways on taxiways, and paint on runways, without flickering
 const LAYER = { aprons: 0.0005, runways: 0.001, paint: 0.0015, numbers: 0.002 }
@@ -453,26 +483,30 @@ export function Airports() {
       </mesh>
       {AIRPORTS.map(airport => (
         <group key={airport.name}>
-          {airport.runways.map(runway => (
-            <RunwayNumbers key={runway.heading} runway={runway} y={airport.elevation + 0.14} />
-          ))}
-          {airport.buildings.map(building => (
-            <BuildingModel
-              key={`${building.x} ${building.z}`}
-              building={building}
-              base={airport.elevation}
-            />
-          ))}
-          {airport.kind !== 'airstrip' &&
-            airport.gates.map(stand => (
-              <JetBridge
-                key={`${stand.x} ${stand.z}`}
-                stand={stand}
+          <AirportDetail airport={airport} range={VR_DETAIL_RANGE}>
+            {airport.buildings.map(building => (
+              <BuildingModel
+                key={`${building.x} ${building.z}`}
+                building={building}
                 base={airport.elevation}
-                terminal={airport.buildings[0]}
               />
             ))}
-          <Windsock airport={airport} />
+          </AirportDetail>
+          <AirportDetail airport={airport} range={VR_SMALL_RANGE}>
+            {airport.runways.map(runway => (
+              <RunwayNumbers key={runway.heading} runway={runway} y={airport.elevation + 0.14} />
+            ))}
+            {airport.kind !== 'airstrip' &&
+              airport.gates.map(stand => (
+                <JetBridge
+                  key={`${stand.x} ${stand.z}`}
+                  stand={stand}
+                  base={airport.elevation}
+                  terminal={airport.buildings[0]}
+                />
+              ))}
+            <Windsock airport={airport} />
+          </AirportDetail>
         </group>
       ))}
     </>
